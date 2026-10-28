@@ -29,18 +29,18 @@ pub fn config_dir() -> Option<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        home_dir().map(|h| h.join("Library/Application Support/SquirrelDisk"))
+        home_dir().map(|h| h.join("Library/Application Support/SquirrelDisk Fork"))
     }
     #[cfg(windows)]
     {
-        std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("SquirrelDisk"))
+        std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("SquirrelDisk Fork"))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| home_dir().map(|h| h.join(".config")))
-            .map(|c| c.join("squirreldisk"))
+            .map(|c| c.join("squirreldisk-fork"))
     }
 }
 

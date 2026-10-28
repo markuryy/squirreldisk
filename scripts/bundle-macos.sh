@@ -17,7 +17,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>SquirrelDisk</string>
   <key>CFBundleDisplayName</key><string>SquirrelDisk</string>
-  <key>CFBundleIdentifier</key><string>com.squirreldisk.app</string>
+  <key>CFBundleIdentifier</key><string>com.markuryy.squirreldisk</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>SquirrelDisk</string>

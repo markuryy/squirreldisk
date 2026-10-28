@@ -394,7 +394,7 @@ impl App {
                     }
                 }
                 RcloneState::Ready(_) => {
-                    ui.painter().text(Pos2::new(x0, y + 4.0), Align2::LEFT_TOP, tr("ACCOUNTS"), bold(11.0), theme.text_faint);
+                    widgets::label(&ui.painter(), Pos2::new(x0, y + 4.0), tr("ACCOUNTS"), &theme);
                     let rb = Rect::from_center_size(Pos2::new(x0 + w - 14.0, y + 10.0), Vec2::splat(26.0));
                     refresh = widgets::icon_button(ui, rb, Id::new("rc-refresh"), Icon::Refresh, &theme, true).on_hover_text(tr("Refresh")).clicked();
                     if !remotes.is_empty() {
@@ -494,7 +494,7 @@ impl App {
                         }
                     }
                     y += list_h + 24.0;
-                    ui.painter().text(Pos2::new(x0, y), Align2::LEFT_TOP, tr("LOCATION"), bold(11.0), theme.text_faint);
+                    widgets::label(&ui.painter(), Pos2::new(x0, y), tr("LOCATION"), &theme);
                     y += 18.0;
                     let r = widgets::text_input(ui, Rect::from_min_size(Pos2::new(x0, y), Vec2::new(w, 38.0)), Id::new("rc-path"), &mut path, "remote:bucket/folder", &theme);
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -622,9 +622,6 @@ impl App {
                     let id = Id::new(("prov", k));
                     let resp = ui.interact(r, id, Sense::click());
                     let h = ui.ctx().animate_bool_with_time(id, resp.hovered(), 0.1);
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
                     let (label, sub, icon) = match p {
                         Some(p) => (p.label, if p.oauth { tr("Sign in with your browser") } else { tr("Keys or password") }, p.icon),
                         None => (tr("Something else"), tr("70+ more, in the terminal"), Icon::LinkOut),
@@ -663,7 +660,7 @@ impl App {
             title(ui, card, &heading, Some(&sub), &theme);
             let mut y = card.top() + 100.0;
             let enabled = busy.is_none();
-            ui.painter().text(Pos2::new(x0, y), Align2::LEFT_TOP, tr("NAME"), bold(11.0), theme.text_faint);
+            widgets::label(&ui.painter(), Pos2::new(x0, y), tr("NAME"), &theme);
             y += 18.0;
             let nr = Rect::from_min_size(Pos2::new(x0, y), Vec2::new((w - 12.0) / 2.0, 38.0));
             ui.add_enabled_ui(enabled, |ui| {

@@ -92,7 +92,6 @@ pub struct Status {
     pub to_read: u64,
     pub read: u64,
     pub errors: u64,
-    pub elapsed: Duration,
     pub places: Vec<PlaceStatus>,
 }
 
@@ -120,8 +119,6 @@ struct Inner {
     counters: Vec<Counters>,
     places: Mutex<Vec<PlaceStatus>>,
     results: Mutex<Results>,
-    started: Instant,
-    finished: Mutex<Option<Duration>>,
 }
 
 /// A running (or finished) comparison. Dropping it stops it.
@@ -142,8 +139,6 @@ impl Finder {
             counters: specs.iter().map(|_| Counters::default()).collect(),
             places: Mutex::new(vec![PlaceStatus::default(); specs.len()]),
             results: Mutex::new(Results::default()),
-            started: Instant::now(),
-            finished: Mutex::new(None),
         });
         let i = inner.clone();
         std::thread::Builder::new().name("dupes".into()).spawn(move || coordinate(i, specs, opts)).expect("spawn dupes thread");
@@ -169,7 +164,6 @@ impl Finder {
             to_read: i.to_read.load(Ordering::Relaxed),
             read: i.read.load(Ordering::Relaxed),
             errors: i.hash_errors.load(Ordering::Relaxed) + i.counters.iter().map(|c| c.errors.load(Ordering::Relaxed)).sum::<u64>(),
-            elapsed: i.finished.lock().unwrap().unwrap_or_else(|| i.started.elapsed()),
             places: i.places.lock().unwrap().clone(),
         }
     }
@@ -484,7 +478,6 @@ fn coordinate(inner: Arc<Inner>, specs: Vec<Spec>, opts: Options) {
         st.cache.save();
     }
     inner.walking.store(false, Ordering::Relaxed);
-    *inner.finished.lock().unwrap() = Some(inner.started.elapsed());
     inner.done.store(true, Ordering::Relaxed);
 }
 

@@ -374,9 +374,6 @@ impl App {
                 s.selected = None;
             }
         }
-        if hit.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         if resp.clicked() {
             if let Some(t) = hit.clone() {
                 match t.kind {

@@ -143,9 +143,9 @@ impl App {
                     }
                 }
                 Ok("dupes-delete") => self.open_modal(Modal::DupesConfirm { ack: false, permanent: true }),
-                Ok("dupes-menu") => {
+                Ok("dupes-options") => {
                     if let Some(d) = self.dupes.as_mut() {
-                        d.trash_menu = true;
+                        d.options = Some(egui::pos2(ctx.content_rect().width() * 0.62, 110.0));
                     }
                 }
                 Ok("delete") => {

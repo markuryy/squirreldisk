@@ -4,7 +4,7 @@ use super::app::{App, CtxMenu, DeleteItem, Modal, Screen, Target};
 use super::fx::Drag;
 use super::shader;
 use super::sunburst::{self, Geometry, SegKind, SegStyle, View};
-use super::theme::{lerp_color, lighten, with_alpha, Theme};
+use super::theme::{lerp_color, with_alpha, Theme};
 use super::widgets::{self, bold, cr, display, font, BtnStyle, Icon};
 use crate::i18n::{tr, tr_status, trf};
 use crate::safety::{Os, Rules};
@@ -73,12 +73,19 @@ impl App {
         self.window_drag_area(ui, Rect::from_min_size(screen.min, Vec2::new(screen.width(), bar_h + 4.0)));
         self.top_bar(ui, bar, si);
 
-        let body = Rect::from_min_max(Pos2::new(screen.left(), bar.bottom() + 4.0), screen.max);
-        let panel_w = (body.width() * 0.36).clamp(300.0, 440.0);
-        let banner = Rect::from_min_max(Pos2::new(body.right() - panel_w - 16.0, body.bottom() - 16.0 - 52.0), Pos2::new(body.right() - 16.0, body.bottom() - 16.0));
-        let panel = Rect::from_min_max(Pos2::new(body.right() - panel_w - 16.0, body.top() + 6.0), Pos2::new(body.right() - 16.0, banner.top() - 10.0));
-        let chart = Rect::from_min_max(Pos2::new(body.left() + 8.0, body.top()), Pos2::new(panel.left() - 8.0, body.bottom() - 76.0));
-        let collector = Rect::from_min_size(Pos2::new(body.left() + 20.0, body.bottom() - 70.0), Vec2::new((chart.width() - 24.0).min(460.0), 54.0));
+        let body = Rect::from_min_max(Pos2::new(screen.left(), bar.bottom()), screen.max);
+        // an inspector against the right edge and a bar along the bottom,
+        // divided by hairlines like a Mac window
+        let panel_w = (body.width() * 0.34).clamp(300.0, 420.0);
+        let panel = Rect::from_min_max(Pos2::new(body.right() - panel_w, body.top()), body.max);
+        let collector = Rect::from_min_max(Pos2::new(body.left(), body.bottom() - 56.0), Pos2::new(panel.left(), body.bottom()));
+        let chart = Rect::from_min_max(Pos2::new(body.left() + 8.0, body.top() + 4.0), Pos2::new(panel.left() - 8.0, collector.top() - 8.0));
+        {
+            let hair = Stroke::new(1.0, theme.stroke);
+            let p = ui.painter();
+            p.hline(screen.x_range(), bar.bottom(), hair);
+            p.vline(panel.left(), panel.y_range(), hair);
+        }
 
         if self.settings.chart_style == "treemap" {
             self.treemap_ui(ui, chart, panel, si);
@@ -86,7 +93,6 @@ impl App {
             self.chart_ui(ui, chart, panel, si);
         }
         self.panel_ui(ui, panel, si);
-        self.sponsor_banner(ui, banner, "panel");
         self.collector_ui(ui, collector, si);
 
         // Linux: follow the view with inotify watches
@@ -169,9 +175,6 @@ impl App {
             }
             let col = if last { theme.text } else { lerp_color(theme.text_dim, theme.text, h) };
             p.text(Pos2::new(r.left() + 6.0, cy), Align2::LEFT_CENTER, &label, fnt, col);
-            if resp.hovered() && !last {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
             if resp.clicked() {
                 match target {
                     None => self.screen = Screen::Home,
@@ -276,9 +279,6 @@ impl App {
                 s.selected = None;
             }
         }
-        if hit.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         if resp.clicked() {
             if let Some(a) = hit.clone() {
                 self.chart_click(si, &a);
@@ -335,7 +335,6 @@ impl App {
         // --- background decoration
         {
             let p = ui.painter();
-            widgets::glow(p, geo.center, radius * 1.2, with_alpha(theme.accent, if theme.dark { 0.05 } else { 0.03 }));
             p.circle_filled(geo.center, radius + 6.0, with_alpha(theme.bg_bottom, 0.25));
         }
 
@@ -456,12 +455,8 @@ impl App {
             Some(f) => trf("{status} · {percent}% · {files} files · {size}", &[("status", &tr_status(&status)), ("percent", &format!("{:.0}", f * 100.0)), ("files", &crate::tree::fmt_count_compact(files)), ("size", &fmt_size(bytes))]),
             None => trf("{status} · {files} files · {size}", &[("status", &tr_status(&status)), ("files", &crate::tree::fmt_count_compact(files)), ("size", &fmt_size(bytes))]),
         };
-        let g = p.layout_no_wrap(txt.clone(), bold(12.0), theme.text);
-        let pill = Rect::from_center_size(Pos2::new(chart.center().x, chart.top() + 18.0), Vec2::new(g.size().x + 40.0, 30.0));
-        widgets::shadow(p, pill, 8.0, 0.6, theme);
-        p.rect_filled(pill, cr(8.0), with_alpha(theme.surface_hi, 0.95));
-        p.circle_filled(Pos2::new(pill.left() + 16.0, pill.center().y), 3.5, with_alpha(theme.accent2, 0.6 + 0.4 * (self.time as f32 * 4.0).sin().abs()));
-        p.galley(Pos2::new(pill.left() + 26.0, pill.center().y - g.size().y / 2.0), g, theme.text);
+        let pill = Rect::from_center_size(Pos2::new(chart.center().x, chart.top() + 14.0), Vec2::new(chart.width(), 20.0));
+        p.text(pill.center(), Align2::CENTER_CENTER, txt, font(12.5), theme.text_dim);
         // Only surface a path when a folder is blocking us (network mount, huge dir…).
         if let Some((cur, secs)) = pr.stuck(10.0) {
             let c = widgets::truncate(p, &trf("Still reading {path} ({seconds}s)", &[("path", &cur), ("seconds", &format!("{secs:.0}"))]), &font(11.0), chart.width() - 60.0);
@@ -527,10 +522,7 @@ impl App {
     fn panel_ui(&mut self, ui: &mut Ui, panel: Rect, si: usize) {
         let theme = self.theme.clone();
         {
-            let p = ui.painter();
-            widgets::shadow(p, panel, 18.0, 0.5, &theme);
-            p.rect_filled(panel, cr(12.0), with_alpha(theme.surface, if theme.dark { 0.72 } else { 0.9 }));
-            p.rect_stroke(panel, cr(12.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.6)), egui::StrokeKind::Inside);
+            ui.painter().rect_filled(panel.with_min_x(panel.left() + 1.0), cr(0.0), theme.surface);
         }
         let treemap_mode = self.settings.chart_style == "treemap";
         let s = &self.sessions[si];
@@ -620,23 +612,17 @@ impl App {
             let h = ui.ctx().animate_bool_with_time(id.with("h"), hl, 0.1);
             if resp.hovered() {
                 new_hover = Some(r.node);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             let p = ui.painter();
             if h > 0.0 {
-                p.rect_filled(rr, cr(8.0), with_alpha(theme.surface_hi, h));
+                p.rect_filled(rr, cr(6.0), with_alpha(theme.surface_hi, h));
             }
-            let dot = Pos2::new(rr.left() + 16.0, rr.center().y - 1.0);
+            // folder or file, as in Finder's list view; groups get no icon
+            let glyph = Rect::from_center_size(Pos2::new(rr.left() + 16.0, rr.center().y - 1.0), Vec2::splat(14.0));
             match r.kind {
-                Kind::Dir => {
-                    p.circle_filled(dot, 5.0 + h, r.color);
-                }
-                Kind::File => {
-                    p.rect_filled(Rect::from_center_size(dot, Vec2::splat(9.0 + h)), cr(2.5), r.color);
-                }
-                _ => {
-                    p.circle_stroke(dot, 4.5 + h, Stroke::new(1.8, r.color));
-                }
+                Kind::Dir => widgets::draw_icon(p, Icon::Folder, glyph, theme.text_dim),
+                Kind::File => widgets::draw_icon(p, Icon::File, glyph, theme.text_dim),
+                _ => {}
             }
             let tc = if r.collected { theme.text_faint } else if matches!(r.kind, Kind::SmallFiles | Kind::Hidden | Kind::Mount) { theme.text_dim } else { theme.text };
             let sz = fmt_size(r.size);
@@ -648,7 +634,7 @@ impl App {
                 p.text(Pos2::new(rr.right() - 16.0 - sw - 10.0, rr.center().y - 1.0), Align2::RIGHT_CENTER, tr("no access"), font(11.0), theme.warn);
             }
             if r.collected {
-                widgets::draw_icon(p, Icon::Acorn, Rect::from_center_size(Pos2::new(rr.right() - 16.0 - sw - 14.0, rr.center().y - 1.0), Vec2::splat(12.0)), theme.warn);
+                widgets::draw_icon(p, Icon::Trash, Rect::from_center_size(Pos2::new(rr.right() - 16.0 - sw - 14.0, rr.center().y - 1.0), Vec2::splat(12.0)), theme.text_faint);
             }
             p.text(Pos2::new(rr.right() - 12.0, rr.center().y - 1.0), Align2::RIGHT_CENTER, sz, bold(12.5), lerp_color(theme.text_dim, theme.text, h));
             if resp.drag_started() && !matches!(r.kind, Kind::Hidden | Kind::Mount) {
@@ -689,12 +675,10 @@ impl App {
             if let Target::Volume(v) = &self.sessions[si].target {
                 let free = if crate::scan::demo::enabled() { v.available } else { crate::scan::platform::volume_space(std::path::Path::new(&v.mount)).map(|x| x.1).unwrap_or(v.available) };
                 let collected = self.sessions[si].collected_size();
-                p.circle_filled(Pos2::new(inner.left() + 8.0, fy + 10.0), 4.0, theme.text_dim);
-                p.text(Pos2::new(inner.left() + 22.0, fy + 10.0), Align2::LEFT_CENTER, tr("Free space"), font(13.0), theme.text_dim);
+                p.text(Pos2::new(inner.left() + 4.0, fy + 10.0), Align2::LEFT_CENTER, tr("Free space"), font(13.0), theme.text_dim);
                 p.text(Pos2::new(inner.right() - 4.0, fy + 10.0), Align2::RIGHT_CENTER, fmt_size(free), bold(12.5), theme.text_dim);
-                p.text(Pos2::new(inner.left() + 22.0, fy + 34.0), Align2::LEFT_CENTER, tr("Free + collected"), font(13.0), theme.text_dim);
-                p.text(Pos2::new(inner.left() + 4.0, fy + 34.0), Align2::LEFT_CENTER, "~", font(13.0), theme.text_dim);
-                p.text(Pos2::new(inner.right() - 4.0, fy + 34.0), Align2::RIGHT_CENTER, fmt_size(free + collected), bold(12.5), theme.ok);
+                p.text(Pos2::new(inner.left() + 4.0, fy + 34.0), Align2::LEFT_CENTER, tr("Free + collected"), font(13.0), theme.text_dim);
+                p.text(Pos2::new(inner.right() - 4.0, fy + 34.0), Align2::RIGHT_CENTER, fmt_size(free + collected), bold(12.5), theme.text);
             }
         } else if let Some(path) = hovered_path {
             let pth = widgets::truncate(p, &path, &font(11.0), inner.width());
@@ -732,37 +716,29 @@ impl App {
         let deleting = self.sessions[si].delete.as_ref().is_some_and(|d| !d.finished.load(Ordering::Relaxed));
         let count = self.sessions[si].collector.len();
         let size = self.sessions[si].collected_size();
-        self.bin_bounce = (self.bin_bounce - self.dt * 2.5).max(0.0);
-        let dg = ui.ctx().animate_bool_with_time(Id::new("bin-drag"), dragging, 0.2);
-        let ov = ui.ctx().animate_bool_with_time(Id::new("bin-over"), over, 0.12);
-        let bounce = (self.bin_bounce * 14.0).sin() * self.bin_bounce * 0.03;
-        let grow = 1.0 + 0.015 * ov + bounce;
-        let r = Rect::from_center_size(rect.center(), rect.size() * grow);
+        self.bin_bounce = 0.0;
+        let dg = ui.ctx().animate_bool_with_time(Id::new("bin-drag"), dragging, 0.15);
+        let ov = ui.ctx().animate_bool_with_time(Id::new("bin-over"), over, 0.1);
+        let r = rect;
         self.bin_rect = r;
 
         let id = Id::new(("collector", si));
         let resp = ui.interact(Rect::from_min_max(r.min, Pos2::new(r.right() - 118.0, r.bottom())), id, Sense::click());
-        let h = ui.ctx().animate_bool_with_time(id.with("h"), resp.hovered(), 0.12);
         let p = ui.painter();
-        if dg > 0.0 {
-            let pulse = 0.5 + 0.5 * (self.time as f32 * 6.0).sin();
-            widgets::glow(p, r.center(), r.width() * 0.6, with_alpha(theme.warn, (0.04 + 0.04 * pulse) * dg + 0.1 * ov));
-        }
-        widgets::shadow(p, r, 12.0, 0.7, &theme);
-        p.rect_filled(r, cr(12.0), lerp_color(lerp_color(theme.surface_hi, lighten(theme.surface_hi, 0.04), h), lerp_color(theme.surface_hi, theme.warn, 0.35), ov));
-        let border = lerp_color(with_alpha(theme.stroke, 0.8), theme.warn, dg);
-        p.rect_stroke(r, cr(12.0), Stroke::new(1.0 + dg, border), egui::StrokeKind::Inside);
+        // a drop target only while something is being dragged
+        p.rect_filled(r, cr(0.0), with_alpha(theme.accent, 0.04 * dg + 0.08 * ov));
+        p.hline(r.x_range(), r.top(), Stroke::new(1.0, lerp_color(theme.stroke, theme.accent, dg)));
         let tx = r.left() + 20.0;
         if count == 0 {
             let msg = if dragging { tr("Drop here to collect") } else { tr("Drag slices or rows here to collect them") };
             let m = widgets::truncate(p, msg, &font(12.5), r.width() - 150.0);
-            p.text(Pos2::new(tx, r.center().y), Align2::LEFT_CENTER, m, font(12.5), if dragging { theme.warn } else { theme.text_dim });
+            p.text(Pos2::new(tx, r.center().y), Align2::LEFT_CENTER, m, font(12.5), if dragging { theme.accent } else { theme.text_dim });
         } else {
-            p.text(Pos2::new(tx, r.center().y - 8.0), Align2::LEFT_CENTER, fmt_size(size), display(16.0), theme.text);
-            p.text(Pos2::new(tx, r.center().y + 11.0), Align2::LEFT_CENTER, if count == 1 { tr("collected · 1 item").to_string() } else { trf("collected · {count} items", &[("count", &count)]) }, font(11.5), theme.text_dim);
+            let what = if count == 1 { tr("collected · 1 item").to_string() } else { trf("collected · {count} items", &[("count", &count)]) };
+            p.text(Pos2::new(tx, r.center().y), Align2::LEFT_CENTER, format!("{} {}", fmt_size(size), what), font(13.0), theme.text);
         }
-        let btn = Rect::from_min_size(Pos2::new(r.right() - 112.0, r.center().y - 16.0), Vec2::new(100.0, 32.0));
-        let del = widgets::button_ex(ui, btn, id.with("del"), tr("Delete"), Some(Icon::Trash), BtnStyle::Danger, &theme, count > 0 && !deleting);
+        let btn = Rect::from_min_size(Pos2::new(r.right() - 108.0, r.center().y - 14.0), Vec2::new(92.0, 28.0));
+        let del = widgets::button_ex(ui, btn, id.with("del"), &format!("{}…", tr("Delete")), None, if count > 0 { BtnStyle::Danger } else { BtnStyle::Subtle }, &theme, count > 0 && !deleting);
         self.mark("delete", btn);
         self.mark("bin", r);
         if del.clicked() {

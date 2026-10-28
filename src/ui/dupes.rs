@@ -4,7 +4,7 @@
 
 use super::app::{App, Modal, Screen, Target};
 use super::theme::{from_hsl, lerp_color, lighten, with_alpha, Theme};
-use super::widgets::{self, bold, cr, display, font, BtnStyle, Icon};
+use super::widgets::{self, bold, cr, font, BtnStyle, Icon};
 use crate::dupes::engine::{Finder, FoundGroup, Options, Spec, Status};
 #[cfg(test)]
 use crate::dupes::engine::FoundFile;
@@ -89,7 +89,8 @@ pub struct DupesUi {
     pub draft_focus: bool,
     pub add_menu: Option<Pos2>,
     /// The menu of the remove button is open.
-    pub trash_menu: bool,
+    /// Where the Options popover hangs, while it is open.
+    pub options: Option<Pos2>,
     /// When each group showed up in the list (for its entrance).
     appeared: HashMap<u32, f64>,
     thumbs: Thumbs,
@@ -149,7 +150,7 @@ impl DupesUi {
             rule_draft: None,
             draft_focus: false,
             add_menu: None,
-            trash_menu: false,
+            options: None,
             appeared: HashMap::new(),
             thumbs: Thumbs::default(),
             meta: Default::default(),
@@ -706,7 +707,7 @@ impl App {
     pub fn dupes_escape(&mut self) {
         match self.dupes.as_mut() {
             Some(d) if d.add_menu.is_some() => d.add_menu = None,
-            Some(d) if d.trash_menu => d.trash_menu = false,
+            Some(d) if d.options.is_some() => d.options = None,
             Some(d) if d.rule_draft.is_some() => d.rule_draft = None,
             _ => self.screen = Screen::Home,
         }
@@ -743,23 +744,29 @@ impl App {
         self.window_drag_area(ui, Rect::from_min_size(screen.min, Vec2::new(screen.width(), bar_h + 4.0)));
         self.dupes_top_bar(ui, bar);
 
-        let body = Rect::from_min_max(Pos2::new(screen.left() + 16.0, bar.bottom() + 6.0), Pos2::new(screen.right() - 16.0, screen.bottom() - 16.0));
+        let body = Rect::from_min_max(Pos2::new(screen.left(), bar.bottom()), screen.max);
         let panel_w = (body.width() * 0.34).clamp(300.0, 420.0);
         let panel = Rect::from_min_max(Pos2::new(body.right() - panel_w, body.top()), body.max);
-        let left = Rect::from_min_max(body.min, Pos2::new(panel.left() - 16.0, body.bottom()));
+        let actions = Rect::from_min_max(Pos2::new(body.left(), body.bottom() - 56.0), Pos2::new(panel.left(), body.bottom()));
+        let left = Rect::from_min_max(body.min + Vec2::new(20.0, 14.0), Pos2::new(panel.left() - 20.0, actions.top()));
+        {
+            let hair = Stroke::new(1.0, theme.stroke);
+            let p = ui.painter();
+            p.hline(screen.x_range(), bar.bottom(), hair);
+            p.vline(panel.left(), panel.y_range(), hair);
+            p.hline(actions.x_range(), actions.top(), hair);
+        }
 
-        let places = Rect::from_min_size(left.min, Vec2::new(left.width(), 108.0));
-        self.dupes_places(ui, places, &mut d);
-        let tools = Rect::from_min_size(Pos2::new(left.left(), places.bottom() + 14.0), Vec2::new(left.width(), 34.0));
+        let places = Rect::from_min_size(left.min, Vec2::new(left.width(), 28.0));
+        let header_h = self.dupes_places(ui, places, &mut d);
+        let tools = Rect::from_min_size(Pos2::new(left.left(), left.top() + header_h + 14.0), Vec2::new(left.width(), 28.0));
         dupes_toolbar(ui, tools, &mut d, &theme);
-        let rules_top = tools.bottom() + 10.0;
-        let rules_h = dupes_rules(ui, Rect::from_min_size(Pos2::new(left.left(), rules_top), Vec2::new(left.width(), 30.0)), &mut d, &theme);
-        let actions = Rect::from_min_max(Pos2::new(left.left(), left.bottom() - 58.0), left.max);
-        let list = Rect::from_min_max(Pos2::new(left.left(), rules_top + rules_h + 10.0), Pos2::new(left.right(), actions.top() - 10.0));
+        let list = Rect::from_min_max(Pos2::new(left.left() - 8.0, tools.bottom() + 12.0), Pos2::new(left.right() + 8.0, actions.top() - 1.0));
         self.dupes_list(ui, list, &mut d);
         self.dupes_actions(ui, actions, &mut d);
         dupes_preview(ui, panel, &mut d, &theme);
         self.dupes_add_menu(ui, &mut d);
+        dupes_options(ui, &mut d, &theme);
         self.dupes = Some(d);
     }
 
@@ -783,9 +790,6 @@ impl App {
         p.text(Pos2::new(r.left() + 6.0, cy), Align2::LEFT_CENTER, home, font(13.0), lerp_color(theme.text_dim, theme.text, h));
         p.text(Pos2::new(r.right() + 4.0, cy), Align2::CENTER_CENTER, "/", font(13.0), theme.text_faint);
         p.text(Pos2::new(r.right() + 14.0, cy), Align2::LEFT_CENTER, tr("Duplicates"), bold(13.0), theme.text);
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
         if resp.clicked() {
             self.screen = Screen::Home;
             self.sfx(Sfx::BlipDown);
@@ -796,69 +800,88 @@ impl App {
         }
     }
 
-    /// The places compared, the scan's progress and the space to win back.
-    fn dupes_places(&mut self, ui: &mut Ui, r: Rect, d: &mut DupesUi) {
+    /// The places compared and one button; a status line only while working.
+    /// Returns the height used.
+    fn dupes_places(&mut self, ui: &mut Ui, r: Rect, d: &mut DupesUi) -> f32 {
         let theme = self.theme.clone();
-        card(ui.painter(), r, &theme);
-        let inner = r.shrink2(Vec2::new(18.0, 14.0));
-        let right_w = 190.0;
-        let left = Rect::from_min_max(inner.min, Pos2::new(inner.right() - right_w - 24.0, inner.bottom()));
+        let row_h = 28.0;
 
-        // space to win back
-        let (freed, extra) = (d.view().freed, d.view().extra);
-        let p = ui.painter();
-        p.text(Pos2::new(inner.right(), inner.top() + 2.0), Align2::RIGHT_TOP, tr("CAN BE FREED"), bold(11.0), theme.text_faint);
-        let shown = ui.ctx().animate_value_with_time(Id::new("dupes-freed"), freed as f32, 0.35);
-        p.text(Pos2::new(inner.right(), inner.top() + 18.0), Align2::RIGHT_TOP, fmt_size(shown as u64), display(30.0), theme.text);
-        p.text(Pos2::new(inner.right(), inner.top() + 58.0), Align2::RIGHT_TOP, trf("of {size} in extra copies", &[("size", &fmt_size(extra))]), font(12.0), theme.text_dim);
-        p.line_segment([Pos2::new(left.right() + 12.0, inner.top() + 2.0), Pos2::new(left.right() + 12.0, inner.bottom() - 2.0)], Stroke::new(1.0, with_alpha(theme.stroke, 0.6)));
+        // what is happening, if anything
+        let groups = d.groups.len() as u64;
+        let (status, frac, done): (String, Option<f32>, bool) = match (&d.run, d.status()) {
+            (Run::Mock(scan), _) => {
+                let frac = scan.fraction();
+                const FILES: u64 = 184_302;
+                const BYTES: u64 = 1_420_000_000_000;
+                let walk = (frac / 0.3).min(1.0);
+                let text = if frac >= 1.0 {
+                    String::new()
+                } else if walk < 1.0 {
+                    trf("Listing files · {files} files · {size}", &[("files", &fmt_count_compact((FILES as f32 * walk) as u64)), ("size", &fmt_size((BYTES as f32 * walk) as u64))])
+                } else {
+                    trf("Comparing {n} files of the same size · {read} of {total}", &[("n", &fmt_count(2387)), ("read", &fmt_size((BYTES as f32 * 0.04 * (frac - 0.3) / 0.7) as u64)), ("total", &fmt_size((BYTES as f32 * 0.04) as u64))])
+                };
+                (text, Some(frac), frac >= 1.0)
+            }
+            (Run::Real { .. }, Some(st)) if !d.stale => {
+                let text = if st.done {
+                    // only worth a line when something went wrong
+                    if st.errors > 0 { trf("{n} could not be read", &[("n", &fmt_count(st.errors))]) } else { String::new() }
+                } else if st.walking {
+                    trf("Listing files · {files} files · {size}", &[("files", &fmt_count_compact(st.files)), ("size", &fmt_size(st.bytes))])
+                } else {
+                    trf("Comparing {n} files of the same size · {read} of {total}", &[("n", &fmt_count(st.candidates)), ("read", &fmt_size(st.read)), ("total", &fmt_size(st.to_read))])
+                };
+                (text, st.fraction(), st.done)
+            }
+            _ => {
+                let hint = if d.places.is_empty() {
+                    tr("Add the folders and disks to compare.").to_string()
+                } else if d.stale {
+                    tr("The places changed: compare again to update the results.").to_string()
+                } else {
+                    String::new()
+                };
+                (hint, None, false)
+            }
+        };
+        let running = d.is_scanning();
+        let _ = groups;
 
-        // places
-        p.text(left.left_top(), Align2::LEFT_TOP, tr("COMPARING"), bold(11.0), theme.text_faint);
-        // how thorough: samples (fast) or every byte
-        {
-            let label = tr("Exact comparison");
-            let lw = p.layout_no_wrap(label.to_string(), font(11.5), Color32::WHITE).size().x;
-            let track = Rect::from_min_size(Pos2::new(left.right() - 26.0, left.top() - 1.0), Vec2::new(26.0, 15.0));
-            let hit = Rect::from_min_max(Pos2::new(track.left() - lw - 8.0, track.top() - 3.0), track.right_bottom() + Vec2::new(0.0, 3.0));
-            let id = Id::new("dupes-exact");
-            let resp = ui.interact(hit, id, Sense::click()).on_hover_text(tr(
-                "Off: compares the start, the end and dozens of spots spread over each big file, which tells photos and videos apart in practice. On: reads every byte, certain but much slower on big videos and slow cards.",
-            ));
-            if resp.clicked() {
-                d.exact = !d.exact;
-                if !matches!(d.run, Run::Idle | Run::Mock(_)) {
-                    d.stop();
-                    d.stale = true;
-                }
+        // the button on the right
+        let label = if running {
+            tr("Stop").to_string()
+        } else if done || d.stale {
+            tr("Compare again").to_string()
+        } else {
+            tr("Find duplicates").to_string()
+        };
+        let bw = ui.painter().layout_no_wrap(label.clone(), bold(13.0), theme.text).size().x + 32.0;
+        let btn = Rect::from_min_size(Pos2::new(r.right() - bw, r.top()), Vec2::new(bw, row_h));
+        let style = if running || done { BtnStyle::Subtle } else { BtnStyle::Primary };
+        let enabled = !d.places.is_empty() && !(running && d.is_mock());
+        if widgets::button_ex(ui, btn, Id::new("dupes-start"), &label, None, style, &theme, enabled).clicked() {
+            if running {
+                d.stop();
+                self.sfx(Sfx::BlipDown);
+            } else {
+                d.start();
+                self.sfx(Sfx::Blip);
             }
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let t = ui.ctx().animate_bool_with_time(id, d.exact, 0.15);
-            let h = ui.ctx().animate_bool_with_time(id.with("h"), resp.hovered(), 0.1);
-            let p = ui.painter();
-            p.text(Pos2::new(track.left() - 7.0, track.center().y), Align2::RIGHT_CENTER, label, font(11.5), lerp_color(theme.text_faint, theme.text, t.max(h * 0.6)));
-            p.rect_filled(track, cr(7.5), lerp_color(theme.surface_hi, theme.accent, t));
-            p.circle_filled(Pos2::new(track.left() + 7.5 + t * 11.0, track.center().y), 5.5, Color32::WHITE);
         }
-        let mut x = left.left();
-        let chip_y = left.top() + 20.0;
-        let chip_w = |p: &Painter, label: &str| p.layout_no_wrap(label.to_string(), bold(12.5), Color32::WHITE).size().x + 52.0;
-        let labels: Vec<String> = d.places.iter().map(|pl| widgets::truncate(ui.painter(), &pl.label, &bold(12.5), 140.0)).collect();
-        let all_w: f32 = labels.iter().map(|l| chip_w(ui.painter(), l) + 8.0).sum();
-        // "Add place" in words when there is room, else just a +
-        let wide_add = all_w + 108.0 <= left.width() - 30.0;
-        let add_w = if wide_add { 100.0 } else { 28.0 };
+
+        // the places, as tokens
+        let right_limit = btn.left() - 12.0;
+        let chip_w = |p: &Painter, label: &str| p.layout_no_wrap(label.to_string(), font(13.0), Color32::WHITE).size().x + 50.0;
+        let labels: Vec<String> = d.places.iter().map(|pl| widgets::truncate(ui.painter(), &pl.label, &font(13.0), 140.0)).collect();
+        let mut x = r.left();
         let mut remove = None;
         for (k, place) in d.places.iter().enumerate() {
             let label = &labels[k];
-            let rr = Rect::from_min_size(Pos2::new(x, chip_y), Vec2::new(chip_w(ui.painter(), label), 28.0));
-            let rest_w = if k + 1 == d.places.len() { 0.0 } else { 70.0 };
-            if rr.right() + rest_w > left.right() - add_w - 38.0 && k > 0 {
-                // no room: say how many more
+            let rr = Rect::from_min_size(Pos2::new(x, r.top()), Vec2::new(chip_w(ui.painter(), label), row_h));
+            if rr.right() > right_limit - 40.0 && k > 0 {
                 let more = trf("+{n} more", &[("n", &(d.places.len() - k))]);
-                ui.painter().text(Pos2::new(x + 4.0, rr.center().y), Align2::LEFT_CENTER, more, font(12.0), theme.text_dim);
+                ui.painter().text(Pos2::new(x + 2.0, rr.center().y), Align2::LEFT_CENTER, more, font(13.0), theme.text_dim);
                 x += 64.0;
                 break;
             }
@@ -869,133 +892,45 @@ impl App {
                 None => place.path.clone(),
             };
             let resp = ui.interact(rr, id, Sense::hover()).on_hover_text(tip);
-            let h = ui.ctx().animate_bool_with_time(id, resp.hovered(), 0.12);
+            let h = ui.ctx().animate_bool_with_time(id, resp.hovered(), 0.1);
             let p = ui.painter();
-            p.rect_filled(rr, cr(14.0), lerp_color(with_alpha(theme.bg_bottom, 0.5), theme.surface_hi, h));
-            let edge = if error.is_some() { with_alpha(theme.danger, 0.8) } else { with_alpha(theme.stroke, 0.7) };
-            p.rect_stroke(rr, cr(14.0), Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-            let (icon, col) = if error.is_some() { (Icon::Warning, theme.danger) } else { (place_icon(place.kind), place_color(k, &theme)) };
+            p.rect_filled(rr, cr(6.0), lerp_color(theme.surface, theme.surface_hi, 0.5 * h));
+            p.rect_stroke(rr, cr(6.0), Stroke::new(1.0, if error.is_some() { theme.danger } else { theme.stroke }), egui::StrokeKind::Inside);
+            let (icon, col) = if error.is_some() { (Icon::Warning, theme.danger) } else { (place_icon(place.kind), theme.text_dim) };
             widgets::draw_icon(p, icon, Rect::from_center_size(Pos2::new(rr.left() + 16.0, rr.center().y), Vec2::splat(14.0)), col);
-            p.text(Pos2::new(rr.left() + 30.0, rr.center().y), Align2::LEFT_CENTER, label, bold(12.5), theme.text);
-            let xr = Rect::from_center_size(Pos2::new(rr.right() - 13.0, rr.center().y), Vec2::splat(18.0));
-            let xr_resp = ui.interact(xr, id.with("x"), Sense::click());
-            let xh = ui.ctx().animate_bool_with_time(id.with("xh"), xr_resp.hovered(), 0.1);
-            let p = ui.painter();
-            p.circle_filled(xr.center(), 9.0, with_alpha(theme.surface_hi, xh));
-            widgets::draw_icon(p, Icon::Close, Rect::from_center_size(xr.center(), Vec2::splat(7.0)), lerp_color(theme.text_faint, theme.text, xh.max(h * 0.5)));
-            if xr_resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            p.text(Pos2::new(rr.left() + 30.0, rr.center().y), Align2::LEFT_CENTER, label, font(13.0), theme.text);
+            // the × shows on hover only
+            let xr = Rect::from_center_size(Pos2::new(rr.right() - 12.0, rr.center().y), Vec2::splat(16.0));
+            let x_resp = ui.interact(xr, id.with("x"), Sense::click());
+            if h > 0.0 {
+                widgets::draw_icon(ui.painter(), Icon::Close, Rect::from_center_size(xr.center(), Vec2::splat(7.0)), with_alpha(theme.text_dim, h));
             }
-            if xr_resp.clicked() {
+            if x_resp.clicked() {
                 remove = Some(k);
             }
-            x = rr.right() + 8.0;
+            x = rr.right() + 6.0;
         }
-        let add = Rect::from_min_size(Pos2::new(x, chip_y), Vec2::new(add_w, 28.0));
-        let mut resp = ui.interact(add, Id::new("dupe-add-place"), Sense::click());
-        if !wide_add {
-            resp = resp.on_hover_text(tr("Add place"));
-        }
-        let h = ui.ctx().animate_bool_with_time(Id::new("dupe-add-place-h"), resp.hovered() || d.add_menu.is_some(), 0.12);
-        let p = ui.painter();
-        p.rect_stroke(add, cr(14.0), Stroke::new(1.0, lerp_color(with_alpha(theme.stroke, 0.9), theme.accent, h)), egui::StrokeKind::Inside);
-        p.rect_filled(add, cr(14.0), with_alpha(theme.accent, 0.12 * h));
-        let plus_x = if wide_add { add.left() + 16.0 } else { add.center().x };
-        widgets::draw_icon(p, Icon::Plus, Rect::from_center_size(Pos2::new(plus_x, add.center().y), Vec2::splat(11.0)), lerp_color(theme.text_dim, theme.accent, h));
-        if wide_add {
-            p.text(Pos2::new(add.left() + 28.0, add.center().y), Align2::LEFT_CENTER, tr("Add place"), bold(12.5), lerp_color(theme.text_dim, theme.text, h));
-        }
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
+        let add = Rect::from_min_size(Pos2::new(x, r.top()), Vec2::new(row_h, row_h));
+        if widgets::button(ui, add, Id::new("dupe-add-place"), "", Some(Icon::Plus), BtnStyle::Subtle, &theme).on_hover_text(tr("Add place")).clicked() {
             d.add_menu = if d.add_menu.is_some() { None } else { Some(add.left_bottom() + Vec2::new(0.0, 6.0)) };
-        }
-        if d.places.is_empty() {
-            ui.painter().text(Pos2::new(add.right() + 12.0, add.center().y), Align2::LEFT_CENTER, tr("Folders, disks, servers or cloud storage"), font(12.0), theme.text_faint);
         }
         if let Some(k) = remove {
             d.remove_place(k);
             self.sfx(Sfx::BlipDown);
         }
 
-        // progress, or the button that starts
-        let line_y = left.top() + 63.0;
-        let groups = d.groups.len() as u64;
-        let (status, frac, done): (String, Option<f32>, bool) = match (&d.run, d.status()) {
-            (Run::Mock(scan), _) => {
-                let frac = scan.fraction();
-                const FILES: u64 = 184_302;
-                const BYTES: u64 = 1_420_000_000_000;
-                let walk = (frac / 0.3).min(1.0);
-                let text = if frac >= 1.0 {
-                    trf("Done · {files} files compared, {groups} sets of duplicates", &[("files", &fmt_count(FILES)), ("groups", &fmt_count(groups))])
-                } else if walk < 1.0 {
-                    trf("Listing files · {files} files · {size}", &[("files", &fmt_count_compact((FILES as f32 * walk) as u64)), ("size", &fmt_size((BYTES as f32 * walk) as u64))])
-                } else {
-                    trf("Comparing {n} files of the same size · {read} of {total}", &[("n", &fmt_count(2387)), ("read", &fmt_size((BYTES as f32 * 0.04 * (frac - 0.3) / 0.7) as u64)), ("total", &fmt_size((BYTES as f32 * 0.04) as u64))])
-                };
-                (text, Some(frac), frac >= 1.0)
-            }
-            (Run::Real { .. }, Some(st)) if !d.stale => {
-                let text = if st.done {
-                    let mut t = trf("Done in {time} · {files} files, {groups} sets of duplicates", &[("time", &fmt_elapsed(st.elapsed)), ("files", &fmt_count(st.files)), ("groups", &fmt_count(groups))]);
-                    if st.errors > 0 {
-                        t += &trf(" · {n} could not be read", &[("n", &fmt_count(st.errors))]);
-                    }
-                    t
-                } else if st.walking {
-                    trf("Listing files · {files} files · {size}", &[("files", &fmt_count_compact(st.files)), ("size", &fmt_size(st.bytes))])
-                } else {
-                    trf("Comparing {n} files of the same size · {read} of {total}", &[("n", &fmt_count(st.candidates)), ("read", &fmt_size(st.read)), ("total", &fmt_size(st.to_read))])
-                };
-                (text, st.fraction(), st.done)
-            }
-            _ => (String::new(), None, false),
-        };
-        let idle = status.is_empty();
+        if status.is_empty() {
+            return row_h;
+        }
+        let y = r.top() + row_h + 10.0;
         let p = ui.painter();
-        if idle {
-            // not started, or the places changed since
-            let hint = if d.places.is_empty() {
-                tr("Add the places to compare.")
-            } else if d.stale {
-                tr("The places changed: compare again to update the results.")
-            } else {
-                tr("Ready when you are.")
-            };
-            let btn = Rect::from_min_size(Pos2::new(left.right() - 168.0, line_y - 10.0), Vec2::new(168.0, 32.0));
-            let st = widgets::truncate(p, hint, &font(12.0), btn.left() - left.left() - 12.0);
-            p.text(Pos2::new(left.left(), line_y + 6.0), Align2::LEFT_CENTER, st, font(12.0), theme.text_dim);
-            let label = if d.stale { tr("Compare again") } else { tr("Find duplicates") };
-            if widgets::button_ex(ui, btn, Id::new("dupes-start"), label, Some(Icon::Search), BtnStyle::Primary, &theme, !d.places.is_empty()).clicked() {
-                d.start();
-                self.sfx(Sfx::Blip);
-            }
-            return;
+        p.text(Pos2::new(r.left(), y + 7.0), Align2::LEFT_CENTER, widgets::truncate(p, &status, &font(12.0), r.width()), font(12.0), theme.text_dim);
+        if running {
+            let bar = Rect::from_min_size(Pos2::new(r.left(), y + 20.0), Vec2::new(r.width(), 4.0));
+            widgets::progress_bar(p, bar, frac, &theme, self.time, None);
+            return row_h + 10.0 + 26.0;
         }
-        let action = Rect::from_center_size(Pos2::new(left.right() - 12.0, line_y + 6.0), Vec2::splat(24.0));
-        let bar = Rect::from_min_size(Pos2::new(left.left(), line_y + 13.0), Vec2::new(left.width() - 34.0, 5.0));
-        if !done {
-            p.circle_filled(Pos2::new(left.left() + 4.0, line_y), 3.5, with_alpha(theme.accent2, 0.6 + 0.4 * ((self.time * 4.0).sin() as f32 * 0.5 + 0.5)));
-        } else {
-            widgets::draw_icon(p, Icon::Check, Rect::from_center_size(Pos2::new(left.left() + 5.0, line_y), Vec2::splat(11.0)), theme.ok);
-        }
-        let st = widgets::truncate(p, &status, &font(12.0), bar.width() - 50.0);
-        p.text(Pos2::new(left.left() + 16.0, line_y), Align2::LEFT_CENTER, st, font(12.0), theme.text_dim);
-        if let (false, Some(f)) = (done, frac) {
-            p.text(Pos2::new(bar.right(), line_y), Align2::RIGHT_CENTER, format!("{:.0}%", f * 100.0), bold(12.0), theme.text);
-        }
-        widgets::progress_bar(p, bar, frac, &theme, self.time, if done { Some(theme.ok) } else { None });
-        if done {
-            if widgets::icon_button(ui, action, Id::new("dupes-rescan"), Icon::Refresh, &theme, true).on_hover_text(tr("Compare again")).clicked() {
-                d.start();
-                self.sfx(Sfx::Blip);
-            }
-        } else if widgets::icon_button(ui, action, Id::new("dupes-stop"), Icon::Close, &theme, !d.is_mock()).on_hover_text(tr("Stop")).clicked() {
-            d.stop();
-            self.sfx(Sfx::BlipDown);
-        }
+        row_h + 10.0 + 16.0
     }
 
     fn dupes_add_menu(&mut self, ui: &mut Ui, d: &mut DupesUi) {
@@ -1037,9 +972,6 @@ impl App {
                 p.text(Pos2::new(rr.left() + 42.0, rr.top() + 14.0), Align2::LEFT_CENTER, t, bold(13.0), lerp_color(theme.text, Color32::WHITE, hh));
                 let st = widgets::truncate(p, sub, &font(11.5), rr.width() - 52.0);
                 p.text(Pos2::new(rr.left() + 42.0, rr.top() + 31.0), Align2::LEFT_CENTER, st, font(11.5), lerp_color(theme.text_dim, Color32::WHITE, hh));
-                if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
                 if resp.clicked() {
                     chosen = Some(k);
                 }
@@ -1153,30 +1085,18 @@ impl App {
             let fresh = d.is_scanning();
             let t0 = *d.appeared.entry(g.id).or_insert(if fresh { now } else { now - 1.0 });
             let appear = ((now - t0) / 0.45).clamp(0.0, 1.0) as f32;
-            let slide = (1.0 - super::sunburst::ease(appear)) * 18.0;
+            let slide = 0.0;
             match l.copy {
                 None => {
                     let expanded = d.expanded.contains(&g.id);
-                    if expanded {
-                        let block_h = GROUP_H + g.copies.len() as f32 * COPY_H + 4.0;
-                        let block = Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width() - 10.0, block_h));
-                        lp.rect_filled(block, cr(10.0), with_alpha(theme.surface, if theme.dark { 0.55 } else { 0.8 }));
-                        lp.rect_stroke(block, cr(10.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.5)), egui::StrokeKind::Inside);
-                    }
                     let rr = Rect::from_min_size(Pos2::new(list.left() + slide, y), Vec2::new(list.width() - 10.0, GROUP_H));
                     let id = Id::new(("dupe-g", g.id));
                     let hit = rr.intersect(list);
                     let resp = ui.interact(hit, id, Sense::click());
                     let sel = d.is_selected(l);
                     let h = ctx.animate_bool_with_time(id.with("h"), resp.hovered() || sel, 0.1);
-                    if resp.hovered() {
-                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if !expanded || h > 0.0 {
-                        lp.rect_filled(rr, cr(10.0), with_alpha(if sel { lerp_color(theme.surface_hi, theme.accent, 0.18) } else { theme.surface_hi }, h * if expanded { 0.6 } else { 1.0 }));
-                    }
-                    if appear < 1.0 {
-                        lp.rect_filled(rr, cr(10.0), with_alpha(theme.accent, 0.22 * (1.0 - appear)));
+                    if h > 0.0 {
+                        lp.rect_filled(rr, cr(6.0), with_alpha(if sel { lerp_color(theme.surface_hi, theme.accent, 0.18) } else { theme.surface_hi }, h));
                     }
                     let a = appear;
                     // checkbox
@@ -1200,20 +1120,11 @@ impl App {
                     let warn_w = if g.none_kept() { 120.0 } else { 0.0 };
                     let tx = thumb.right() + 12.0;
                     let room = rr.right() - 16.0 - sw - 16.0 - warn_w - tx;
-                    let name = widgets::truncate(&lp, &g.name, &bold(13.5), room);
-                    lp.text(Pos2::new(tx, rr.center().y - 9.0), Align2::LEFT_CENTER, name, bold(13.5), with_alpha(theme.text, a));
-                    let mut sub = trf("{n} copies", &[("n", &g.copies.len())]);
-                    sub += &format!(" · {}", g.ext);
-                    if let Some((w, h)) = g.meta.dims {
-                        sub += &format!(" · {w}×{h}");
-                    }
-                    if let Some(s) = g.meta.duration {
-                        sub += &format!(" · {}", fmt_duration(s));
-                    }
-                    let sub = widgets::truncate(&lp, &sub, &font(11.5), room);
-                    lp.text(Pos2::new(tx, rr.center().y + 10.0), Align2::LEFT_CENTER, sub, font(11.5), with_alpha(theme.text_faint, a));
-                    lp.text(Pos2::new(rr.right() - 16.0, rr.center().y - 9.0), Align2::RIGHT_CENTER, size_txt, bold(13.0), with_alpha(if freed > 0 { theme.text } else { theme.text_faint }, a));
-                    lp.text(Pos2::new(rr.right() - 16.0, rr.center().y + 10.0), Align2::RIGHT_CENTER, trf("{size} each", &[("size", &fmt_size(g.size))]), font(11.5), with_alpha(theme.text_faint, a));
+                    let name = widgets::truncate(&lp, &g.name, &font(13.0), room);
+                    lp.text(Pos2::new(tx, rr.center().y - 8.0), Align2::LEFT_CENTER, name, font(13.0), with_alpha(theme.text, a));
+                    let sub = trf("{n} copies", &[("n", &g.copies.len())]);
+                    lp.text(Pos2::new(tx, rr.center().y + 10.0), Align2::LEFT_CENTER, sub, font(12.0), with_alpha(theme.text_dim, a));
+                    lp.text(Pos2::new(rr.right() - 16.0, rr.center().y), Align2::RIGHT_CENTER, size_txt, font(13.0), with_alpha(if freed > 0 { theme.text } else { theme.text_faint }, a));
                     if g.none_kept() {
                         let wx = rr.right() - 16.0 - sw - 16.0;
                         lp.text(Pos2::new(wx, rr.center().y), Align2::RIGHT_CENTER, tr("no copy kept"), bold(11.5), theme.danger);
@@ -1232,14 +1143,7 @@ impl App {
                     let resp = ui.interact(rr.intersect(list), id, Sense::click());
                     let sel = d.is_selected(l);
                     let h = ctx.animate_bool_with_time(id.with("h"), resp.hovered() || sel, 0.1);
-                    if resp.hovered() {
-                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    lp.rect_filled(rr, cr(8.0), with_alpha(if sel { lerp_color(theme.surface_hi, theme.accent, 0.22) } else { theme.surface_hi }, h));
-                    // tree guide
-                    let gx = list.left() + 44.0 - 0.5;
-                    lp.line_segment([Pos2::new(gx, y - 2.0), Pos2::new(gx, y + if ci + 1 == g.copies.len() { COPY_H / 2.0 } else { COPY_H })], Stroke::new(1.0, with_alpha(theme.stroke, 0.8)));
-                    lp.line_segment([Pos2::new(gx, rr.center().y), Pos2::new(gx + 8.0, rr.center().y)], Stroke::new(1.0, with_alpha(theme.stroke, 0.8)));
+                    lp.rect_filled(rr, cr(6.0), with_alpha(if sel { lerp_color(theme.surface_hi, theme.accent, 0.22) } else { theme.surface_hi }, h));
                     let cb = Rect::from_center_size(Pos2::new(rr.left() + 22.0, rr.center().y), Vec2::splat(16.0));
                     let cb_resp = ui.interact(cb.expand(4.0).intersect(list), id.with("cb"), if c.locked { Sense::hover() } else { Sense::click() });
                     if c.locked {
@@ -1249,21 +1153,11 @@ impl App {
                     } else {
                         draw_checkbox(&lp, cb, if c.marked { 2 } else { 0 }, cb_resp.hovered(), &theme, 1.0);
                     }
-                    // keep / remove tag
+                    // unchecked means kept; a clone frees nothing, which is worth saying
                     let mut x = rr.left() + 40.0;
-                    if !c.marked {
-                        x += tag(&lp, Pos2::new(x, rr.center().y), tr("KEEP"), theme.ok, &theme) + 8.0;
-                    }
-                    if c.protected {
-                        widgets::draw_icon(&lp, Icon::Shield, Rect::from_center_size(Pos2::new(x + 6.0, rr.center().y), Vec2::splat(12.0)), theme.ok);
-                        x += 20.0;
-                    }
                     if c.shares && c.marked {
                         x += tag(&lp, Pos2::new(x, rr.center().y), tr("CLONE"), theme.text_dim, &theme) + 8.0;
                     }
-                    let place_icon = place_icon(d.places.get(c.place).map(|p| p.kind).unwrap_or(PlaceKind::Folder));
-                    widgets::draw_icon(&lp, place_icon, Rect::from_center_size(Pos2::new(x + 7.0, rr.center().y), Vec2::splat(13.0)), place_color(c.place, &theme));
-                    x += 22.0;
                     let date = fmt_date(c.modified);
                     let dw = lp.layout_no_wrap(date.clone(), font(11.5), theme.text).size().x;
                     let shown = DupesUi::shown(c, &g.name);
@@ -1273,6 +1167,9 @@ impl App {
                     }
                     let tc = if c.marked { theme.text_dim } else { theme.text };
                     lp.text(Pos2::new(x, rr.center().y), Align2::LEFT_CENTER, path, font(12.5), tc);
+                    if c.protected {
+                        resp.clone().on_hover_text(tr("protected by a rule"));
+                    }
                     lp.text(Pos2::new(rr.right() - 14.0, rr.center().y), Align2::RIGHT_CENTER, date, font(11.5), theme.text_faint);
                     if cb_resp.clicked() {
                         click = Some((*l, 1));
@@ -1328,95 +1225,36 @@ impl App {
     /// Bottom bar: what is selected and the button that removes it.
     fn dupes_actions(&mut self, ui: &mut Ui, r: Rect, d: &mut DupesUi) {
         let theme = self.theme.clone();
-        card(ui.painter(), r, &theme);
         let v = d.view();
         let (n, bytes, unsafe_groups) = (v.marked, v.freed, v.unsafe_groups);
         let p = ui.painter();
         let x = r.left() + 20.0;
-        if n == 0 {
-            p.text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, tr("Check the copies you want to remove"), font(13.0), theme.text_dim);
+        let (line, col) = if n == 0 {
+            (tr("Check the copies you want to remove").to_string(), theme.text_dim)
+        } else if unsafe_groups > 0 {
+            (trf("{n} files would lose every copy", &[("n", &unsafe_groups)]), theme.danger)
         } else {
-            p.text(Pos2::new(x, r.center().y - 9.0), Align2::LEFT_CENTER, trf("{n} copies selected", &[("n", &fmt_count(n as u64))]), bold(13.5), theme.text);
-            let sub = if unsafe_groups > 0 {
-                (trf("{n} files would lose every copy", &[("n", &unsafe_groups)]), theme.danger)
-            } else {
-                (trf("{size} will be freed", &[("size", &fmt_size(bytes))]), theme.text_dim)
-            };
-            p.text(Pos2::new(x, r.center().y + 10.0), Align2::LEFT_CENTER, sub.0, font(12.0), sub.1);
-        }
-        let trash = Rect::from_min_size(Pos2::new(r.right() - 14.0 - 206.0, r.center().y - 17.0), Vec2::new(206.0, 34.0));
-        let clear = Rect::from_min_size(Pos2::new(trash.left() - 10.0 - 84.0, trash.top()), Vec2::new(84.0, 34.0));
-        let auto = Rect::from_min_size(Pos2::new(clear.left() - 8.0 - 136.0, trash.top()), Vec2::new(136.0, 34.0));
-        if r.width() > 620.0 {
-            if widgets::button(ui, auto, Id::new("dupes-auto"), tr("Auto-select"), Some(Icon::Bolt), BtnStyle::Ghost, &theme).clicked() {
-                for g in d.groups.iter_mut() {
-                    g.manual = false;
-                }
-                d.reapply();
-                self.sfx(Sfx::Blip);
+            (format!("{} · {}", trf("{n} copies selected", &[("n", &fmt_count(n as u64))]), trf("{size} will be freed", &[("size", &fmt_size(bytes))])), theme.text)
+        };
+        p.text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, line, font(13.0), col);
+        let label = tr("Move to Trash…");
+        let tw = p.layout_no_wrap(label.to_string(), bold(13.0), theme.text).size().x + 32.0;
+        let trash = Rect::from_min_size(Pos2::new(r.right() - 20.0 - tw, r.center().y - 14.0), Vec2::new(tw, 28.0));
+        let auto_label = tr("Auto-select");
+        let aw = p.layout_no_wrap(auto_label.to_string(), font(13.0), theme.text).size().x + 28.0;
+        let auto = Rect::from_min_size(Pos2::new(trash.left() - 8.0 - aw, trash.top()), Vec2::new(aw, 28.0));
+        if r.width() > 560.0 && widgets::button(ui, auto, Id::new("dupes-auto"), auto_label, None, BtnStyle::Subtle, &theme).clicked() {
+            for g in d.groups.iter_mut() {
+                g.manual = false;
             }
-            if widgets::button(ui, clear, Id::new("dupes-clear"), tr("Clear"), None, BtnStyle::Ghost, &theme).clicked() {
-                for g in d.groups.iter_mut() {
-                    g.manual = true;
-                    g.copies.iter_mut().for_each(|c| c.marked = false);
-                }
-                d.touch();
-                self.sfx(Sfx::BlipDown);
-            }
+            d.reapply();
+            self.sfx(Sfx::Blip);
         }
         let ready = n > 0 && unsafe_groups == 0 && !d.is_scanning() && d.removing.is_none();
-        // split button: the Trash, and a menu with "Delete permanently"
-        let main = Rect::from_min_max(trash.min, Pos2::new(trash.right() - 31.0, trash.bottom()));
-        let more = Rect::from_min_max(Pos2::new(trash.right() - 30.0, trash.top()), trash.max);
-        let left_r = egui::CornerRadius { nw: 7, sw: 7, ne: 0, se: 0 };
-        let right_r = egui::CornerRadius { nw: 0, sw: 0, ne: 7, se: 7 };
-        let resp = widgets::button_shaped(ui, main, Id::new("dupes-trash"), tr("Move to Trash"), Some(Icon::Trash), BtnStyle::Danger, &theme, ready, left_r);
+        let resp = widgets::button_ex(ui, trash, Id::new("dupes-trash"), label, None, if ready { BtnStyle::Danger } else { BtnStyle::Subtle }, &theme, ready);
         let resp = if n > 0 && d.is_scanning() { resp.on_hover_text(tr("Available once the comparison is over")) } else { resp };
-        let more_resp = widgets::button_shaped(ui, more, Id::new("dupes-trash-more"), "", Some(Icon::Expand), BtnStyle::Danger, &theme, ready, right_r).on_hover_text(tr("More ways to remove"));
-        let mut open = None;
-        if resp.clicked() {
-            open = Some(false);
-        }
-        if more_resp.clicked() {
-            d.trash_menu = !d.trash_menu;
-        }
-        if d.trash_menu {
-            // opens upwards: the bar is at the bottom of the window
-            let items = [(Icon::Trash, tr("Move to Trash…"), false), (Icon::Warning, tr("Delete permanently…"), true)];
-            let mw = 230.0;
-            let mh = items.len() as f32 * 34.0 + 12.0;
-            let origin = Pos2::new(trash.right() - mw, trash.top() - 8.0 - mh);
-            let mut menu_rect = Rect::NOTHING;
-            egui::Area::new(Id::new("dupes-trash-menu")).order(egui::Order::Foreground).fixed_pos(origin).show(ui.ctx(), |ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(mw, mh), Sense::click());
-                menu_rect = rect;
-                let p = ui.painter();
-                widgets::shadow(p, rect, 12.0, 1.0, &theme);
-                p.rect_filled(rect, cr(12.0), theme.surface_hi);
-                p.rect_stroke(rect, cr(12.0), Stroke::new(1.0, theme.stroke), egui::StrokeKind::Inside);
-                for (k, (icon, label, permanent)) in items.iter().enumerate() {
-                    let rr = Rect::from_min_size(rect.left_top() + Vec2::new(6.0, 6.0 + k as f32 * 34.0), Vec2::new(mw - 12.0, 32.0));
-                    let id = Id::new(("dupes-trash-item", k));
-                    let r = ui.interact(rr, id, Sense::click());
-                    let hh = ui.ctx().animate_bool_with_time(id, r.hovered(), 0.08);
-                    let col = if *permanent { theme.danger } else { theme.accent };
-                    let p = ui.painter();
-                    p.rect_filled(rr, cr(8.0), with_alpha(col, 0.85 * hh));
-                    widgets::draw_icon(p, *icon, Rect::from_center_size(Pos2::new(rr.left() + 18.0, rr.center().y), Vec2::splat(14.0)), lerp_color(col, Color32::WHITE, hh));
-                    p.text(Pos2::new(rr.left() + 36.0, rr.center().y), Align2::LEFT_CENTER, *label, bold(13.0), lerp_color(theme.text, Color32::WHITE, hh));
-                    if r.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if r.clicked() {
-                        open = Some(*permanent);
-                    }
-                }
-            });
-            let clicked_out = ui.input(|i| i.pointer.any_pressed()) && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| !menu_rect.contains(p) && !more.contains(p));
-            if clicked_out || open.is_some() {
-                d.trash_menu = false;
-            }
-        }
+        // the confirmation offers deleting permanently instead
+        let open = resp.clicked().then_some(false);
         if let Some(permanent) = open {
             if d.is_mock() {
                 self.toasts.push(trf("Preview only: {n} copies ({size}) would go to the Trash", &[("n", &fmt_count(n as u64)), ("size", &fmt_size(bytes))]), theme.accent);
@@ -1436,9 +1274,12 @@ fn dupes_toolbar(ui: &mut Ui, r: Rect, d: &mut DupesUi, theme: &Theme) {
     let t = ui.ctx().animate_bool_with_time(id.with("f"), focused, 0.15);
     {
         let p = ui.painter();
-        p.rect_filled(field, cr(8.0), lerp_color(with_alpha(theme.bg_bottom, 0.55), with_alpha(theme.bg_bottom, 0.9), t));
-        p.rect_stroke(field, cr(8.0), Stroke::new(1.0, lerp_color(with_alpha(theme.stroke, 0.9), theme.accent, t)), egui::StrokeKind::Inside);
-        widgets::draw_icon(p, Icon::Search, Rect::from_center_size(Pos2::new(field.left() + 17.0, field.center().y), Vec2::splat(14.0)), lerp_color(theme.text_faint, theme.accent, t));
+        p.rect_filled(field, cr(6.0), theme.surface);
+        p.rect_stroke(field, cr(6.0), Stroke::new(1.0, theme.stroke), egui::StrokeKind::Inside);
+        if t > 0.0 {
+            p.rect_stroke(field, cr(6.0), Stroke::new(3.0, with_alpha(theme.accent, 0.4 * t)), egui::StrokeKind::Outside);
+        }
+        widgets::draw_icon(p, Icon::Search, Rect::from_center_size(Pos2::new(field.left() + 17.0, field.center().y), Vec2::splat(14.0)), theme.text_faint);
     }
     let inner = Rect::from_min_max(Pos2::new(field.left() + 32.0, field.top()), Pos2::new(field.right() - if d.search.is_empty() { 10.0 } else { 30.0 }, field.bottom()));
     let edit = egui::TextEdit::singleline(&mut d.search)
@@ -1461,17 +1302,11 @@ fn dupes_toolbar(ui: &mut Ui, r: Rect, d: &mut DupesUi, theme: &Theme) {
 
     // filter
     let segs = [(Filter::All, tr("All")), (Filter::Photos, tr("Photos")), (Filter::Videos, tr("Videos")), (Filter::Other, tr("Other"))];
-    let n = d.view().counts;
-    let counts = |f: Filter| n[segs.iter().position(|s| s.0 == f).unwrap_or(0)];
     let p = ui.painter().clone();
-    let widths: Vec<f32> = segs
-        .iter()
-        .map(|(f, l)| p.layout_no_wrap(l.to_string(), bold(12.5), Color32::WHITE).size().x + p.layout_no_wrap(counts(*f).to_string(), font(11.5), Color32::WHITE).size().x + 30.0)
-        .collect();
+    let widths: Vec<f32> = segs.iter().map(|(_, l)| p.layout_no_wrap(l.to_string(), font(13.0), Color32::WHITE).size().x + 28.0).collect();
     let total: f32 = widths.iter().sum::<f32>() + 6.0;
     let seg_rect = Rect::from_min_size(Pos2::new(field.right() + 12.0, r.top()), Vec2::new(total, r.height()));
-    p.rect_filled(seg_rect, cr(8.0), with_alpha(theme.bg_bottom, 0.55));
-    p.rect_stroke(seg_rect, cr(8.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.9)), egui::StrokeKind::Inside);
+    p.rect_filled(seg_rect, cr(7.0), theme.surface_hi);
     let mut x = seg_rect.left() + 3.0;
     for (k, (f, label)) in segs.iter().enumerate() {
         let rr = Rect::from_min_size(Pos2::new(x, seg_rect.top() + 3.0), Vec2::new(widths[k], seg_rect.height() - 6.0));
@@ -1479,14 +1314,9 @@ fn dupes_toolbar(ui: &mut Ui, r: Rect, d: &mut DupesUi, theme: &Theme) {
         let resp = ui.interact(rr, sid, Sense::click());
         let on = ui.ctx().animate_bool_with_time(sid.with("on"), d.filter == *f, 0.15);
         let h = ui.ctx().animate_bool_with_time(sid.with("h"), resp.hovered(), 0.1);
-        p.rect_filled(rr, cr(6.0), lerp_color(with_alpha(theme.surface_hi, 0.6 * h), theme.surface_hi, on));
-        let lc = lerp_color(theme.text_dim, theme.text, on.max(h));
-        let lw = p.layout_no_wrap(label.to_string(), bold(12.5), lc).size().x;
-        p.text(Pos2::new(rr.left() + 10.0, rr.center().y), Align2::LEFT_CENTER, *label, bold(12.5), lc);
-        p.text(Pos2::new(rr.left() + 16.0 + lw, rr.center().y), Align2::LEFT_CENTER, counts(*f).to_string(), font(11.5), lerp_color(theme.text_faint, theme.accent, on));
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
+        p.rect_filled(rr, cr(5.0), with_alpha(theme.surface, on));
+        let _ = h;
+        p.text(rr.center(), Align2::CENTER_CENTER, *label, font(13.0), lerp_color(theme.text_dim, theme.text, on));
         if resp.clicked() {
             d.filter = *f;
             d.scroll = 0.0;
@@ -1494,172 +1324,158 @@ fn dupes_toolbar(ui: &mut Ui, r: Rect, d: &mut DupesUi, theme: &Theme) {
         x += widths[k];
     }
 
-    // sort
+    // Options… (rules and how thorough), then the sort order
+    let opt_label = format!("{}…", tr("Options"));
+    let ow = p.layout_no_wrap(opt_label.clone(), font(13.0), Color32::WHITE).size().x + 28.0;
+    let opt = Rect::from_min_size(Pos2::new(r.right() - ow, r.top()), Vec2::new(ow, r.height()));
+    if widgets::button(ui, opt, Id::new("dupes-options"), &opt_label, None, BtnStyle::Subtle, theme).clicked() {
+        d.options = if d.options.is_some() { None } else { Some(Pos2::new(opt.right(), opt.bottom() + 6.0)) };
+    }
     let label = match d.sort {
         Sort::Size => tr("Biggest first"),
         Sort::Copies => tr("Most copies first"),
         Sort::Name => tr("By name"),
     };
-    let lw = p.layout_no_wrap(label.to_string(), bold(12.5), Color32::WHITE).size().x;
-    let sr = Rect::from_min_size(Pos2::new(r.right() - lw - 40.0, r.top()), Vec2::new(lw + 40.0, r.height()));
+    let lw = p.layout_no_wrap(label.to_string(), font(13.0), Color32::WHITE).size().x;
+    let sr = Rect::from_min_size(Pos2::new(opt.left() - 8.0 - lw - 36.0, r.top()), Vec2::new(lw + 36.0, r.height()));
     if sr.left() > seg_rect.right() + 8.0 {
-        let sid = Id::new("dupes-sort");
-        let resp = ui.interact(sr, sid, Sense::click());
-        let h = ui.ctx().animate_bool_with_time(sid, resp.hovered(), 0.1);
-        p.rect_filled(sr, cr(8.0), with_alpha(theme.surface_hi, 0.8 * h));
-        p.text(Pos2::new(sr.left() + 12.0, sr.center().y), Align2::LEFT_CENTER, label, bold(12.5), lerp_color(theme.text_dim, theme.text, h));
-        widgets::draw_icon(&p, Icon::Expand, Rect::from_center_size(Pos2::new(sr.right() - 16.0, sr.center().y), Vec2::splat(10.0)), theme.text_faint);
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
+        if widgets::button(ui, sr.with_max_x(sr.right()), Id::new("dupes-sort"), "", None, BtnStyle::Subtle, theme).clicked() {
             d.sort = match d.sort {
                 Sort::Size => Sort::Copies,
                 Sort::Copies => Sort::Name,
                 Sort::Name => Sort::Size,
             };
         }
+        p.text(Pos2::new(sr.left() + 12.0, sr.center().y), Align2::LEFT_CENTER, label, font(13.0), theme.text);
+        widgets::draw_icon(&p, Icon::Expand, Rect::from_center_size(Pos2::new(sr.right() - 14.0, sr.center().y), Vec2::splat(9.0)), theme.text_dim);
     }
 }
 
-/// The "always keep" rules, as chips that wrap. Returns the height used.
-fn dupes_rules(ui: &mut Ui, r: Rect, d: &mut DupesUi, theme: &Theme) -> f32 {
-    let p = ui.painter().clone();
-    let chip_h = 28.0;
-    let gap = 8.0;
-    widgets::draw_icon(&p, Icon::Shield, Rect::from_center_size(Pos2::new(r.left() + 8.0, r.top() + chip_h / 2.0), Vec2::splat(14.0)), theme.ok);
-    p.text(Pos2::new(r.left() + 22.0, r.top() + chip_h / 2.0), Align2::LEFT_CENTER, tr("Always keep"), bold(12.5), theme.text_dim);
-    let prefer_label = match d.prefer {
-        Prefer::Oldest => tr("the oldest copy"),
-        Prefer::Newest => tr("the newest copy"),
-        Prefer::ShortestPath => tr("the shortest path"),
-    };
-    let otherwise = tr("Otherwise keep");
-    let ow = p.layout_no_wrap(otherwise.to_string(), font(12.0), Color32::WHITE).size().x;
-    let pw = p.layout_no_wrap(prefer_label.to_string(), bold(12.5), Color32::WHITE).size().x + 34.0;
-    let pref = Rect::from_min_size(Pos2::new(r.right() - pw, r.top()), Vec2::new(pw, chip_h));
-    let right_limit = pref.left() - ow - 20.0;
-
-    let start_x = r.left() + 22.0 + p.layout_no_wrap(tr("Always keep").to_string(), bold(12.5), Color32::WHITE).size().x + 12.0;
-    let (mut x, mut y) = (start_x, r.top());
-    let mut toggle = None;
+/// The Options popover: how thorough the comparison is, which copies are
+/// always kept, and which copy wins otherwise.
+fn dupes_options(ui: &mut Ui, d: &mut DupesUi, theme: &Theme) {
+    let Some(anchor) = d.options else { return };
+    let w = 400.0;
+    let row = 28.0;
+    let pad = 16.0;
+    let h = pad + row + 12.0 + 1.0 + 12.0 + 20.0 + d.rules.len() as f32 * row + row + 12.0 + 1.0 + 12.0 + row + pad;
+    let origin = Pos2::new(anchor.x - w, anchor.y);
+    let mut menu_rect = Rect::NOTHING;
+    let mut toggled = false;
     let mut remove = None;
-    let place = |x: &mut f32, y: &mut f32, w: f32| -> Rect {
-        let limit = if *y == r.top() { right_limit } else { r.right() };
-        if *x + w > limit && *x > start_x {
-            *x = start_x;
-            *y += chip_h + 6.0;
+    let mut exact = d.exact;
+    egui::Area::new(Id::new("dupes-options-pop")).order(egui::Order::Foreground).fixed_pos(origin).show(ui.ctx(), |ui| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+        menu_rect = rect;
+        let p = ui.painter();
+        widgets::shadow(p, rect, 10.0, 1.5, theme);
+        p.rect_filled(rect, cr(10.0), theme.surface);
+        p.rect_stroke(rect, cr(10.0), Stroke::new(1.0, theme.stroke), egui::StrokeKind::Inside);
+        let x0 = rect.left() + pad;
+        let x1 = rect.right() - pad;
+        let mut y = rect.top() + pad;
+        let sep = |ui: &Ui, y: f32| ui.painter().hline(x0..=x1, y, Stroke::new(1.0, theme.stroke));
+
+        // how thorough
+        ui.painter().text(Pos2::new(x0, y + row / 2.0), Align2::LEFT_CENTER, tr("Exact comparison"), font(13.0), theme.text);
+        let tgl = Rect::from_center_size(Pos2::new(x1 - 19.0, y + row / 2.0), Vec2::new(38.0, 22.0));
+        widgets::toggle(ui, tgl, Id::new("dupes-exact"), &mut exact, theme).on_hover_text(tr(
+            "Off: compares the start, the end and dozens of spots spread over each big file, which tells photos and videos apart in practice. On: reads every byte, certain but much slower on big videos and slow cards.",
+        ));
+        y += row + 12.0;
+        sep(ui, y);
+        y += 13.0;
+
+        // always keep
+        ui.painter().text(Pos2::new(x0, y + 8.0), Align2::LEFT_CENTER, tr("Always keep"), bold(13.0), theme.text);
+        y += 20.0;
+        for (k, rule) in d.rules.iter_mut().enumerate() {
+            let rr = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(x1 - x0 - 28.0, row));
+            let pattern = widgets::truncate(ui.painter(), &rule.pattern, &font(13.0), rr.width() - 30.0);
+            if widgets::checkbox(ui, rr, Id::new(("dupes-rule", k)), &mut rule.on, &pattern, theme).clicked() {
+                toggled = true;
+            }
+            let xr = Rect::from_center_size(Pos2::new(x1 - 10.0, y + row / 2.0), Vec2::splat(20.0));
+            if widgets::icon_button(ui, xr, Id::new(("dupes-rule-x", k)), Icon::Close, theme, true).on_hover_text(tr("Remove")).clicked() {
+                remove = Some(k);
+            }
+            y += row;
         }
-        let rr = Rect::from_min_size(Pos2::new(*x, *y), Vec2::new(w, chip_h));
-        *x += w + gap;
-        rr
-    };
-    for (k, rule) in d.rules.iter().enumerate() {
-        let txt = widgets::truncate(&p, &rule.pattern, &font(12.5), 240.0);
-        let tw = p.layout_no_wrap(txt.clone(), font(12.5), Color32::WHITE).size().x;
-        let rr = place(&mut x, &mut y, tw + 56.0);
-        let id = Id::new(("dupes-rule", k));
-        let resp = ui.interact(rr, id, Sense::click());
-        let h = ui.ctx().animate_bool_with_time(id.with("h"), resp.hovered(), 0.1);
-        let on = ui.ctx().animate_bool_with_time(id.with("on"), rule.on, 0.15);
-        p.rect_filled(rr, cr(14.0), lerp_color(with_alpha(theme.bg_bottom, 0.5), with_alpha(theme.ok, 0.16), on));
-        p.rect_stroke(rr, cr(14.0), Stroke::new(1.0, lerp_color(with_alpha(theme.stroke, 0.9), with_alpha(theme.ok, 0.6), on)), egui::StrokeKind::Inside);
-        if h > 0.0 {
-            p.rect_filled(rr, cr(14.0), with_alpha(theme.surface_hi, 0.35 * h));
-        }
-        let dot = Pos2::new(rr.left() + 15.0, rr.center().y);
-        p.circle_stroke(dot, 5.0, Stroke::new(1.5, lerp_color(theme.text_faint, theme.ok, on)));
-        p.circle_filled(dot, 3.0 * on, theme.ok);
-        p.text(Pos2::new(rr.left() + 28.0, rr.center().y), Align2::LEFT_CENTER, txt, font(12.5), lerp_color(theme.text_faint, theme.text, on));
-        let xr = Rect::from_center_size(Pos2::new(rr.right() - 14.0, rr.center().y), Vec2::splat(18.0));
-        let x_resp = ui.interact(xr, id.with("x"), Sense::click());
-        let xh = ui.ctx().animate_bool_with_time(id.with("xh"), x_resp.hovered(), 0.1);
-        p.circle_filled(xr.center(), 9.0, with_alpha(theme.surface_hi, xh));
-        widgets::draw_icon(&p, Icon::Close, Rect::from_center_size(xr.center(), Vec2::splat(7.0)), lerp_color(theme.text_faint, theme.text, xh.max(h * 0.6)));
-        if resp.hovered() || x_resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if x_resp.clicked() {
-            remove = Some(k);
-        } else if resp.clicked() {
-            toggle = Some(k);
-        }
-    }
-    // new rule
-    if let Some(mut draft) = d.rule_draft.take() {
-        let rr = place(&mut x, &mut y, 300.0);
-        let id = Id::new("dupes-rule-draft");
-        let resp = widgets::text_input(ui, rr, id, &mut draft, tr("**/Archive/**  or  ~/Pictures"), theme);
-        if d.draft_focus {
-            resp.request_focus();
-            d.draft_focus = false;
-        }
-        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if resp.lost_focus() {
-            if enter && !draft.trim().is_empty() {
-                d.rules.push(Rule { pattern: draft.trim().to_string(), on: true });
-                d.reapply();
+        let rr = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(x1 - x0, row - 2.0));
+        if let Some(mut draft) = d.rule_draft.take() {
+            let resp = widgets::text_input(ui, rr, Id::new("dupes-rule-draft"), &mut draft, tr("**/Archive/**  or  ~/Pictures"), theme);
+            if d.draft_focus {
+                resp.request_focus();
+                d.draft_focus = false;
+            }
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if resp.lost_focus() {
+                if enter && !draft.trim().is_empty() {
+                    d.rules.push(Rule { pattern: draft.trim().to_string(), on: true });
+                    toggled = true;
+                }
+            } else {
+                d.rule_draft = Some(draft);
             }
         } else {
-            d.rule_draft = Some(draft);
+            let label = format!("{}…", tr("Add rule"));
+            let bw = ui.painter().layout_no_wrap(label.clone(), font(13.0), theme.text).size().x + 28.0;
+            if widgets::button(ui, rr.with_max_x(x0 + bw), Id::new("dupes-rule-add"), &label, None, BtnStyle::Subtle, theme).clicked() {
+                d.rule_draft = Some(String::new());
+                d.draft_focus = true;
+            }
         }
-    } else {
-        let label = tr("Add rule");
-        let tw = p.layout_no_wrap(label.to_string(), bold(12.5), Color32::WHITE).size().x;
-        let rr = place(&mut x, &mut y, tw + 40.0);
-        let id = Id::new("dupes-rule-add");
-        let resp = ui.interact(rr, id, Sense::click());
-        let h = ui.ctx().animate_bool_with_time(id, resp.hovered(), 0.1);
-        p.rect_stroke(rr, cr(14.0), Stroke::new(1.0, lerp_color(with_alpha(theme.stroke, 0.9), theme.accent, h)), egui::StrokeKind::Inside);
-        widgets::draw_icon(&p, Icon::Plus, Rect::from_center_size(Pos2::new(rr.left() + 16.0, rr.center().y), Vec2::splat(10.0)), lerp_color(theme.text_dim, theme.accent, h));
-        p.text(Pos2::new(rr.left() + 28.0, rr.center().y), Align2::LEFT_CENTER, label, bold(12.5), lerp_color(theme.text_dim, theme.text, h));
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        y += row + 12.0;
+        sep(ui, y);
+        y += 13.0;
+
+        // otherwise
+        ui.painter().text(Pos2::new(x0, y + row / 2.0), Align2::LEFT_CENTER, tr("Otherwise keep"), font(13.0), theme.text);
+        let prefer_label = match d.prefer {
+            Prefer::Oldest => tr("the oldest copy"),
+            Prefer::Newest => tr("the newest copy"),
+            Prefer::ShortestPath => tr("the shortest path"),
+        };
+        let pw = ui.painter().layout_no_wrap(prefer_label.to_string(), font(13.0), theme.text).size().x + 40.0;
+        let pref = Rect::from_min_size(Pos2::new(x1 - pw, y), Vec2::new(pw, row));
+        if widgets::button(ui, pref, Id::new("dupes-prefer"), "", None, BtnStyle::Subtle, theme).clicked() {
+            d.prefer = d.prefer.next();
+            toggled = true;
         }
-        if resp.clicked() {
-            d.rule_draft = Some(String::new());
-            d.draft_focus = true;
+        let p = ui.painter();
+        p.text(Pos2::new(pref.left() + 12.0, pref.center().y), Align2::LEFT_CENTER, prefer_label, font(13.0), theme.text);
+        widgets::draw_icon(p, Icon::Expand, Rect::from_center_size(Pos2::new(pref.right() - 14.0, pref.center().y), Vec2::splat(9.0)), theme.text_dim);
+    });
+    if exact != d.exact {
+        d.exact = exact;
+        if !matches!(d.run, Run::Idle | Run::Mock(_)) {
+            d.stop();
+            d.stale = true;
         }
-    }
-    if let Some(k) = toggle {
-        d.rules[k].on = !d.rules[k].on;
-        d.reapply();
     }
     if let Some(k) = remove {
         d.rules.remove(k);
+        toggled = true;
+    }
+    if toggled {
         d.reapply();
     }
-
-    // otherwise: which copy wins
-    p.text(Pos2::new(pref.left() - 8.0, pref.center().y), Align2::RIGHT_CENTER, otherwise, font(12.0), theme.text_faint);
-    let id = Id::new("dupes-prefer");
-    let resp = ui.interact(pref, id, Sense::click());
-    let h = ui.ctx().animate_bool_with_time(id, resp.hovered(), 0.1);
-    p.rect_filled(pref, cr(8.0), lerp_color(with_alpha(theme.bg_bottom, 0.5), theme.surface_hi, h));
-    p.rect_stroke(pref, cr(8.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.9)), egui::StrokeKind::Inside);
-    p.text(Pos2::new(pref.left() + 12.0, pref.center().y), Align2::LEFT_CENTER, prefer_label, bold(12.5), theme.text);
-    widgets::draw_icon(&p, Icon::Expand, Rect::from_center_size(Pos2::new(pref.right() - 14.0, pref.center().y), Vec2::splat(9.0)), theme.text_faint);
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    // a click elsewhere closes it (the Options button toggles it itself)
+    let button = Rect::from_min_max(Pos2::new(anchor.x - 120.0, anchor.y - 40.0), anchor);
+    let clicked_out = ui.input(|i| i.pointer.any_pressed()) && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| !menu_rect.contains(p) && !button.contains(p));
+    if clicked_out && d.rule_draft.is_none() {
+        d.options = None;
     }
-    if resp.clicked() {
-        d.prefer = d.prefer.next();
-        d.reapply();
-    }
-    y + chip_h - r.top()
 }
 
 /// Right panel: a preview of the selected file, what it is and its copies.
 fn dupes_preview(ui: &mut Ui, panel: Rect, d: &mut DupesUi, theme: &Theme) {
     let p = ui.painter().clone();
-    widgets::shadow(&p, panel, 18.0, 0.5, theme);
-    p.rect_filled(panel, cr(12.0), with_alpha(theme.surface, if theme.dark { 0.72 } else { 0.9 }));
-    p.rect_stroke(panel, cr(12.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.6)), egui::StrokeKind::Inside);
-    let inner = panel.shrink2(Vec2::new(18.0, 18.0));
+    p.rect_filled(panel.with_min_x(panel.left() + 1.0), cr(0.0), theme.surface);
+    let inner = panel.shrink2(Vec2::new(20.0, 18.0));
     let Some((gid, ci)) = d.selected else {
         let c = panel.center() - Vec2::new(0.0, 30.0);
-        widgets::glow(&p, c, 70.0, with_alpha(theme.accent, 0.12));
-        widgets::draw_icon(&p, Icon::Copies, Rect::from_center_size(c, Vec2::splat(44.0)), with_alpha(theme.accent, 0.8));
+        widgets::draw_icon(&p, Icon::Copies, Rect::from_center_size(c, Vec2::splat(44.0)), theme.text_faint);
         p.text(c + Vec2::new(0.0, 52.0), Align2::CENTER_CENTER, tr("Pick a file to see it here"), bold(14.0), theme.text);
         let g = p.layout(tr("Photos, RAW files and videos show a preview. Every copy is listed with where it lives.").to_string(), font(12.0), theme.text_dim, inner.width() - 40.0);
         let gw = g.size().x;
@@ -1684,7 +1500,7 @@ fn dupes_preview(ui: &mut Ui, panel: Rect, d: &mut DupesUi, theme: &Theme) {
     // preview
     let ph = (inner.width() * 0.68).min(inner.height() * 0.42);
     let pr = Rect::from_min_size(inner.min, Vec2::new(inner.width(), ph));
-    p.rect_filled(pr, cr(10.0), with_alpha(theme.bg_bottom, 0.8));
+    p.rect_filled(pr, cr(6.0), theme.bg_top);
     match tex {
         Some((tex, img_aspect)) => {
             // the picture's own shape, letterboxed in the frame
@@ -1694,51 +1510,17 @@ fn dupes_preview(ui: &mut Ui, panel: Rect, d: &mut DupesUi, theme: &Theme) {
             } else {
                 Rect::from_center_size(pr.center(), Vec2::new(pr.width(), pr.width() / aspect))
             };
-            p.add(RectShape::filled(fr, cr(10.0), Color32::WHITE).with_texture(tex, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))));
-            if media == Media::Video {
-                let c = fr.center();
-                p.circle_filled(c, 26.0, with_alpha(Color32::BLACK, 0.45));
-                p.circle_stroke(c, 26.0, Stroke::new(1.5, with_alpha(Color32::WHITE, 0.8)));
-                widgets::draw_icon(&p, Icon::Play, Rect::from_center_size(c + Vec2::new(2.0, 0.0), Vec2::splat(20.0)), Color32::WHITE);
-                if let Some(s) = meta.duration {
-                    badge(&p, fr.right_bottom() - Vec2::new(10.0, 10.0), Align2::RIGHT_BOTTOM, &fmt_duration(s));
-                }
-            }
-            if meta.dims.is_some_and(|(w, _)| w >= 3840) && media == Media::Video {
-                badge(&p, fr.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, "4K");
-            }
-            if media == Media::Raw {
-                badge(&p, fr.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, &format!("RAW · {}", g.ext));
-            }
+            p.add(RectShape::filled(fr, cr(6.0), Color32::WHITE).with_texture(tex, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0))));
         }
         None => draw_file_art(&p, pr, media, &ext, seed, theme),
     }
-    // open it, or show it in the Finder
-    if sel_local {
-        let open_r = Rect::from_center_size(Pos2::new(pr.right() - 22.0, pr.top() + 22.0), Vec2::splat(30.0));
-        let reveal_r = open_r.translate(Vec2::new(-36.0, 0.0));
-        for (r, icon, tip, reveal) in [(open_r, Icon::LinkOut, tr("Open"), false), (reveal_r, Icon::Folder, if cfg!(target_os = "macos") { tr("Reveal in Finder") } else { tr("Show in file manager") }, true)] {
-            let id = Id::new(("dupes-open", reveal));
-            let resp = ui.interact(r, id, Sense::click()).on_hover_text(tip);
-            let h = ui.ctx().animate_bool_with_time(id, resp.hovered(), 0.1);
-            p.circle_filled(r.center(), 15.0, with_alpha(Color32::BLACK, 0.4 + 0.25 * h));
-            widgets::draw_icon(&p, icon, Rect::from_center_size(r.center(), Vec2::splat(13.0)), Color32::WHITE);
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if resp.clicked() {
-                super::app::os_open(&sel_path, reveal);
-            }
-        }
-    }
-
     // title
     let mut y = pr.bottom() + 16.0;
     let size = fmt_size(g.size);
-    let sw = p.layout_no_wrap(size.clone(), display(18.0), theme.text).size().x;
-    let name = widgets::truncate(&p, &g.name, &display(18.0), inner.width() - sw - 14.0);
-    p.text(Pos2::new(inner.left(), y), Align2::LEFT_TOP, name, display(18.0), theme.text);
-    p.text(Pos2::new(inner.right(), y), Align2::RIGHT_TOP, size, display(18.0), theme.text);
+    let sw = p.layout_no_wrap(size.clone(), bold(15.0), theme.text).size().x;
+    let name = widgets::truncate(&p, &g.name, &bold(15.0), inner.width() - sw - 14.0);
+    p.text(Pos2::new(inner.left(), y), Align2::LEFT_TOP, name, bold(15.0), theme.text);
+    p.text(Pos2::new(inner.right(), y), Align2::RIGHT_TOP, size, font(15.0), theme.text_dim);
     y += 28.0;
     let kind = match media {
         Media::Photo => tr("Photo"),
@@ -1777,108 +1559,40 @@ fn dupes_preview(ui: &mut Ui, panel: Rect, d: &mut DupesUi, theme: &Theme) {
         p.text(Pos2::new(inner.left() + label_w, y), Align2::LEFT_TOP, v, font(12.5), theme.text);
         y += 21.0;
     }
-    y += 10.0;
-    p.line_segment([Pos2::new(inner.left(), y), Pos2::new(inner.right(), y)], Stroke::new(1.0, with_alpha(theme.stroke, 0.6)));
-    y += 14.0;
-    super::home::section_label(ui, Pos2::new(inner.left(), y), tr("COPIES"), theme);
-    y += 22.0;
-
-    // copies, each with its whole path (wrapped)
-    let mut toggle = None;
-    let mut pick = None;
-    for (k, c) in g.copies.iter().enumerate() {
-        let label = if c.locked { tr("Library") } else if c.marked { tr("Remove") } else { tr("Keep") };
-        let col = if c.locked { theme.text_dim } else if c.marked { theme.danger } else { theme.ok };
-        let lw = p.layout_no_wrap(label.to_string(), bold(11.5), col).size().x;
-        let left_x = inner.left() - 8.0;
-        let tx = left_x + 46.0;
-        let room = inner.right() + 8.0 - 10.0 - (lw + 22.0) - 10.0 - tx;
-        let mut path_g = p.layout(c.path.clone(), font(11.5), theme.text_dim, room);
-        if path_g.rows.len() > 3 {
-            // very deep paths: keep the start and the end, on three lines at most
-            let short = truncate_middle(&p, &c.path, &font(11.5), room * 2.7);
-            path_g = p.layout(short, font(11.5), theme.text_dim, room);
-        }
-        let row_h = 30.0 + path_g.size().y + 10.0;
-        let rr = Rect::from_min_size(Pos2::new(left_x, y), Vec2::new(inner.width() + 16.0, row_h - 4.0));
-        if rr.bottom() > inner.bottom() {
-            let more = g.copies.len() - k;
-            p.text(Pos2::new(inner.left(), y + 8.0), Align2::LEFT_TOP, trf("+{n} more", &[("n", &more)]), font(12.0), theme.text_dim);
-            break;
-        }
-        let id = Id::new(("dupes-pc", gid, k));
-        let resp = ui.interact(rr, id, Sense::click());
-        let sel = k == ci;
-        let h = ui.ctx().animate_bool_with_time(id.with("h"), resp.hovered() || sel, 0.1);
-        p.rect_filled(rr, cr(8.0), with_alpha(if sel { lerp_color(theme.surface_hi, theme.accent, 0.2) } else { theme.surface_hi }, h));
-        let place = d.places.get(c.place);
-        let icon = place_icon(place.map(|p| p.kind).unwrap_or(PlaceKind::Folder));
-        let tile = Rect::from_center_size(Pos2::new(rr.left() + 22.0, rr.top() + 22.0), Vec2::splat(28.0));
-        p.rect_filled(tile, cr(7.0), with_alpha(place_color(c.place, theme), 0.18));
-        widgets::draw_icon(&p, icon, tile.shrink(7.0), place_color(c.place, theme));
-        // keep / remove switch (copies in a library always stay)
-        let pill = Rect::from_min_size(Pos2::new(rr.right() - 10.0 - lw - 22.0, rr.top() + 11.0), Vec2::new(lw + 22.0, 22.0));
-        let pill_resp = ui.interact(pill, id.with("pill"), if c.locked { Sense::hover() } else { Sense::click() });
-        let ph = ui.ctx().animate_bool_with_time(id.with("ph"), pill_resp.hovered() && !c.locked, 0.1);
-        p.rect_filled(pill, cr(11.0), with_alpha(col, 0.16 + 0.14 * ph));
-        p.rect_stroke(pill, cr(11.0), Stroke::new(1.0, with_alpha(col, 0.5 + 0.4 * ph)), egui::StrokeKind::Inside);
-        p.text(pill.center(), Align2::CENTER_CENTER, label, bold(11.5), col);
-        if c.locked {
-            pill_resp.clone().on_hover_text(tr("Inside an app's library (Photos, Final Cut…): always kept"));
-        } else if pill_resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        let pl = place.map(|p| p.label.clone()).unwrap_or_default();
-        let note = if c.protected {
-            tr("protected by a rule").to_string()
-        } else if c.shares && c.marked {
-            tr("clone: frees no space").to_string()
-        } else {
-            fmt_date(c.modified)
-        };
-        let head = format!("{pl}  ·  {note}");
-        p.text(Pos2::new(tx, rr.top() + 14.0), Align2::LEFT_CENTER, widgets::truncate(&p, &head, &bold(12.0), room), bold(12.0), theme.text);
-        p.galley(Pos2::new(tx, rr.top() + 26.0), path_g, theme.text_dim);
-        if pill_resp.clicked() {
-            toggle = Some(k);
-        } else if resp.double_clicked() && is_local(d, c.place) && !d.is_mock() {
-            super::app::os_open(&c.path, true);
-        } else if resp.clicked() {
-            pick = Some(k);
-        }
-        if resp.hovered() && !pill_resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        y += row_h;
+    // the copy picked in the list
+    y += 12.0;
+    if let Some(c) = g.copies.get(ci) {
+        let place = d.places.get(c.place).map(|p| p.label.clone()).unwrap_or_default();
+        p.text(Pos2::new(inner.left(), y), Align2::LEFT_TOP, place, font(12.0), theme.text_faint);
+        y += 18.0;
+        let path_g = p.layout(c.path.clone(), font(12.5), theme.text, inner.width());
+        let ph = path_g.size().y;
+        p.galley(Pos2::new(inner.left(), y), path_g, theme.text);
+        y += ph + 14.0;
     }
-    if let Some(k) = toggle {
-        d.toggle_copy(gi, k);
-    }
-    if let Some(k) = pick {
-        d.selected = Some((gid, k));
-        d.expanded.insert(gid);
-        d.reveal = true;
+    if sel_local {
+        let label = if cfg!(target_os = "macos") { tr("Reveal in Finder") } else { tr("Show in file manager") };
+        let bw = p.layout_no_wrap(label.to_string(), font(13.0), theme.text).size().x + 28.0;
+        let b = Rect::from_min_size(Pos2::new(inner.left(), y), Vec2::new(bw, 28.0));
+        if widgets::button(ui, b, Id::new("dupes-reveal"), label, None, BtnStyle::Subtle, theme).clicked() {
+            super::app::os_open(&sel_path, true);
+        }
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // drawing helpers
 
-fn card(p: &Painter, r: Rect, theme: &Theme) {
-    widgets::shadow(p, r, 12.0, 0.4, theme);
-    p.rect_filled(r, cr(12.0), with_alpha(theme.surface, if theme.dark { 0.72 } else { 0.9 }));
-    p.rect_stroke(r, cr(12.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.6)), egui::StrokeKind::Inside);
-}
-
 /// 0 empty, 1 some, 2 checked.
 fn draw_checkbox(p: &Painter, b: Rect, state: u8, hovered: bool, theme: &Theme, alpha: f32) {
     let fill = match state {
-        0 => if hovered { theme.surface_hi } else { with_alpha(theme.bg_bottom, 0.6) },
-        _ => if hovered { lighten(theme.accent, 0.06) } else { theme.accent },
+        0 => if hovered { theme.surface_hi } else { theme.surface },
+        _ => theme.accent,
     };
-    p.rect_filled(b, cr(5.0), with_alpha(fill, alpha));
+    p.rect_filled(b, cr(4.0), with_alpha(fill, alpha));
     if state == 0 {
-        p.rect_stroke(b, cr(5.0), Stroke::new(1.2, with_alpha(if hovered { theme.accent } else { theme.text_faint }, alpha)), egui::StrokeKind::Inside);
+        p.rect_stroke(b, cr(4.0), Stroke::new(1.0, with_alpha(theme.stroke, alpha)), egui::StrokeKind::Inside);
     }
     match state {
         1 => {
@@ -1889,22 +1603,12 @@ fn draw_checkbox(p: &Painter, b: Rect, state: u8, hovered: bool, theme: &Theme, 
     }
 }
 
-/// Small rounded tag; returns its width.
+/// A short word before a path ("Keep"); returns its width.
 fn tag(p: &Painter, left_center: Pos2, text: &str, color: Color32, _theme: &Theme) -> f32 {
-    let g = p.layout_no_wrap(text.to_string(), bold(10.0), color);
-    let r = Rect::from_min_size(Pos2::new(left_center.x, left_center.y - 9.0), Vec2::new(g.size().x + 14.0, 18.0));
-    p.rect_filled(r, cr(9.0), with_alpha(color, 0.16));
-    p.galley(Pos2::new(r.left() + 7.0, r.center().y - g.size().y / 2.0), g, color);
-    r.width()
-}
-
-/// Dark label over an image (duration, 4K, RAW).
-fn badge(p: &Painter, at: Pos2, align: Align2, text: &str) {
-    let g = p.layout_no_wrap(text.to_string(), bold(11.0), Color32::WHITE);
-    let size = g.size() + Vec2::new(12.0, 6.0);
-    let r = align.anchor_size(at, size);
-    p.rect_filled(r, cr(5.0), with_alpha(Color32::BLACK, 0.55));
-    p.galley(r.min + Vec2::new(6.0, 3.0), g, Color32::WHITE);
+    let g = p.layout_no_wrap(widgets::sentence_case(text), font(12.0), color);
+    let w = g.size().x;
+    p.galley(Pos2::new(left_center.x, left_center.y - g.size().y / 2.0), g, color);
+    w
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1912,10 +1616,6 @@ fn draw_thumb(p: &Painter, r: Rect, media: Media, tex: Option<(egui::TextureId, 
     match tex {
         Some((tex, aspect)) => {
             p.add(RectShape::filled(r, cr(radius), with_alpha(Color32::WHITE, alpha)).with_texture(tex, cover_uv(aspect, 1.0)));
-            if media == Media::Video {
-                p.circle_filled(r.center(), 8.0, with_alpha(Color32::BLACK, 0.45 * alpha));
-                widgets::draw_icon(p, Icon::Play, Rect::from_center_size(r.center() + Vec2::new(0.8, 0.0), Vec2::splat(8.0)), with_alpha(Color32::WHITE, alpha));
-            }
         }
         None => {
             let col = file_color(media, seed, theme);
@@ -1933,7 +1633,6 @@ fn draw_thumb(p: &Painter, r: Rect, media: Media, tex: Option<(egui::TextureId, 
 /// Large art for files without a picture: a waveform or the file type.
 fn draw_file_art(p: &Painter, r: Rect, media: Media, ext: &str, seed: u32, theme: &Theme) {
     let col = file_color(media, seed, theme);
-    widgets::glow(p, r.center(), r.height() * 0.6, with_alpha(col, 0.18));
     if media == Media::Audio {
         wave(p, r.shrink2(Vec2::new(28.0, r.height() * 0.28)), seed, col, 48);
         return;
@@ -1956,11 +1655,8 @@ fn wave(p: &Painter, r: Rect, seed: u32, col: Color32, bars: usize) {
     }
 }
 
-fn file_color(media: Media, seed: u32, theme: &Theme) -> Color32 {
-    match media {
-        Media::Audio => theme.accent2,
-        _ => theme.wheel_at((seed % 997) as f32 / 997.0),
-    }
+fn file_color(_media: Media, _seed: u32, theme: &Theme) -> Color32 {
+    theme.text_faint
 }
 
 fn place_icon(kind: PlaceKind) -> Icon {
@@ -1970,11 +1666,6 @@ fn place_icon(kind: PlaceKind) -> Icon {
         PlaceKind::Server => Icon::Server,
         PlaceKind::Cloud => Icon::Cloud,
     }
-}
-
-/// Each place gets its own colour, so copies are easy to tell apart.
-fn place_color(k: usize, theme: &Theme) -> Color32 {
-    theme.wheel_at(0.08 + k as f32 * 0.29)
 }
 
 /// UV rect that crops an image of `img` aspect to fill a frame of `frame` aspect.
@@ -2024,15 +1715,6 @@ fn truncate_middle(p: &Painter, text: &str, font: &egui::FontId, max_w: f32) -> 
 
 fn fmt_date((y, m, d): (u16, u8, u8)) -> String {
     format!("{y}-{m:02}-{d:02}")
-}
-
-fn fmt_elapsed(d: Duration) -> String {
-    let s = d.as_secs_f32();
-    if s < 60.0 {
-        format!("{s:.1} s")
-    } else {
-        fmt_duration(s as u32)
-    }
 }
 
 fn fmt_duration(s: u32) -> String {

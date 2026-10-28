@@ -1,13 +1,12 @@
-//! Juice: drag ghost, particles, toasts.
+//! Drag ghost and toasts.
 
 use super::app::App;
-use super::theme::{lighten, with_alpha, Theme};
+use super::theme::{with_alpha, Theme};
 use super::widgets::{self, bold, cr, font};
 use crate::sound::Sfx;
 use crate::i18n::tr;
 use crate::tree::fmt_size;
 use eframe::egui::{self, Align2, Color32, Id, LayerId, Order, Pos2, Rect, Shape, Stroke, Vec2};
-use std::f32::consts::TAU;
 use std::time::Instant;
 
 pub struct Drag {
@@ -20,128 +19,6 @@ pub struct Drag {
     pub vel: Vec2,
     pub over_bin: bool,
     pub started: Instant,
-}
-
-// ---------------------------------------------------------------------------
-
-struct P {
-    pos: Pos2,
-    vel: Vec2,
-    life: f32,
-    max: f32,
-    color: Color32,
-    size: f32,
-    rot: f32,
-    spin: f32,
-    shape: u8,
-    target: Option<Pos2>,
-}
-
-#[derive(Default)]
-pub struct Particles {
-    ps: Vec<P>,
-    seed: u32,
-}
-
-impl Particles {
-    fn rnd(&mut self) -> f32 {
-        self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
-        (self.seed >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.ps.is_empty()
-    }
-
-    /// Burst of little bits flying out of `pos`, optionally sucked into `target`.
-    pub fn burst(&mut self, pos: Pos2, n: usize, colors: &[Color32], speed: f32, target: Option<Pos2>) {
-        for i in 0..n {
-            let a = self.rnd() * TAU;
-            let s = speed * (0.35 + self.rnd());
-            let life = 0.6 + self.rnd() * 0.6;
-            let shape = (self.rnd() * 3.0) as u8;
-            let rot = self.rnd() * TAU;
-            let spin = (self.rnd() - 0.5) * 14.0;
-            let size = 2.5 + self.rnd() * 4.0;
-            self.ps.push(P {
-                pos,
-                vel: Vec2::angled(a) * s,
-                life,
-                max: life,
-                color: colors[i % colors.len().max(1)],
-                size,
-                rot,
-                spin,
-                shape,
-                target,
-            });
-        }
-    }
-
-    /// Confetti raining from the top of `rect`.
-    pub fn confetti(&mut self, rect: Rect, colors: &[Color32]) {
-        for i in 0..140 {
-            let x = rect.left() + self.rnd() * rect.width();
-            let y = rect.top() - self.rnd() * 60.0;
-            let life = 1.8 + self.rnd() * 1.4;
-            let vx = (self.rnd() - 0.5) * 160.0;
-            let vy = 60.0 + self.rnd() * 160.0;
-            let rot = self.rnd() * TAU;
-            let spin = (self.rnd() - 0.5) * 10.0;
-            let size = 4.0 + self.rnd() * 4.0;
-            self.ps.push(P {
-                pos: Pos2::new(x, y),
-                vel: Vec2::new(vx, vy),
-                life,
-                max: life,
-                color: colors[i % colors.len().max(1)],
-                size,
-                rot,
-                spin,
-                shape: if i % 7 == 0 { 3 } else { 1 },
-                target: None,
-            });
-        }
-    }
-
-    pub fn step_and_draw(&mut self, ctx: &egui::Context, dt: f32, theme: &Theme) {
-        if self.ps.is_empty() {
-            return;
-        }
-        let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("particles")));
-        for p in self.ps.iter_mut() {
-            p.life -= dt;
-            if let Some(t) = p.target {
-                let age = 1.0 - p.life / p.max;
-                let to = t - p.pos;
-                p.vel += to * dt * (6.0 + age * 30.0);
-                p.vel *= 1.0 - dt * 4.0;
-                if to.length() < 8.0 && age > 0.3 {
-                    p.life = p.life.min(0.05);
-                }
-            } else {
-                p.vel.y += 380.0 * dt;
-                p.vel *= 1.0 - dt * 0.9;
-            }
-            p.pos += p.vel * dt;
-            p.rot += p.spin * dt;
-            let a = (p.life / p.max).clamp(0.0, 1.0);
-            let c = with_alpha(p.color, (a * 1.6).min(1.0));
-            match p.shape {
-                0 => {
-                    painter.circle_filled(p.pos, p.size * 0.6, c);
-                }
-                3 => widgets::acorn(&painter, p.pos, p.size * 2.4, c, Some((c, lighten(c, -0.2)))),
-                _ => {
-                    let d = Vec2::angled(p.rot) * p.size;
-                    let e = Vec2::angled(p.rot + TAU / 4.0) * p.size * 0.5;
-                    painter.add(Shape::convex_polygon(vec![p.pos - d - e, p.pos + d - e, p.pos + d + e, p.pos - d + e], c, Stroke::NONE));
-                }
-            }
-        }
-        self.ps.retain(|p| p.life > 0.0);
-        let _ = theme;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,8 +51,7 @@ impl Toasts {
         self.list.retain(|t| t.born.elapsed().as_secs_f32() < 5.0);
         let screen = ctx.content_rect();
         let painter = ctx.layer_painter(LayerId::new(Order::Tooltip, Id::new("toasts")));
-        // stay above the sponsor banner that sits in the bottom-right corner
-        let mut y = screen.bottom() - 84.0;
+        let mut y = screen.bottom() - 32.0;
         let k = 1.0 - (-dt * 14.0).exp();
         for t in self.list.iter_mut().rev() {
             let _ = ();
@@ -256,8 +132,6 @@ impl App {
                 if ok {
                     self.sfx(Sfx::Plop);
                     self.bin_bounce = 1.0;
-                    let colors = [d.color, lighten(d.color, 0.15), theme.warn, theme.accent2];
-                    self.particles.burst(rect.center(), 26, &colors, 260.0, Some(self.bin_rect.center()));
                 } else {
                     self.toasts.push(tr("Already collected (or not deletable)").into(), theme.warn);
                 }

@@ -95,13 +95,13 @@ fn script(name: &str) -> Vec<Step> {
         "themes" => {
             s.extend([Scan("/"), WaitScan, Wait(1.0), Record(true), Wait(0.6), Move(Aim::Mark("settings"), 0.9), Wait(0.2)]);
             s.extend(click());
-            for t in ["theme:Midnight Neon", "theme:Autumn Forest", "theme:Paper", "theme:Sunset"] {
+            for t in ["theme:Light", "theme:Dark", "theme:Automatic"] {
                 s.extend([Wait(0.5), Move(Aim::Mark(t), 0.6), Wait(0.15)]);
                 s.extend(click());
             }
             s.extend([Wait(0.6), Move(Aim::Mark("modal-close"), 0.7), Wait(0.2)]);
             s.extend(click());
-            s.extend([Wait(1.6), Theme("Hazelnut")]);
+            s.extend([Wait(1.6), Theme("Automatic")]);
         }
         _ => {}
     }

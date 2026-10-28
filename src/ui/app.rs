@@ -1,4 +1,4 @@
-use super::fx::{Drag, Particles, Toasts};
+use super::fx::{Drag, Toasts};
 use super::shader::SunburstGl;
 use super::sunburst::{Animator, View};
 use super::theme::{self, Theme};
@@ -291,7 +291,6 @@ pub struct CtxMenu {
 pub struct App {
     pub settings: Settings,
     pub theme: Theme,
-    pub themes: Vec<Theme>,
     pub sounds: Option<Sounds>,
     pub gl: Option<Arc<Mutex<SunburstGl>>>,
     pub screen: Screen,
@@ -303,7 +302,6 @@ pub struct App {
     pub modal_opened: Instant,
     pub toasts: Toasts,
     pub drag: Option<Drag>,
-    pub particles: Particles,
     pub time: f64,
     pub dt: f32,
     pub last_frame: Instant,
@@ -336,7 +334,6 @@ pub struct App {
     pub update_prompted: Option<String>,
     /// "Update now" was chosen: restart as soon as the update is installed.
     pub update_restart: bool,
-    pub sponsors: crate::sponsor::Sponsors,
     /// App icon as a texture, for the home header.
     pub logo: Option<egui::TextureHandle>,
     pub dock: DockState,
@@ -358,7 +355,22 @@ pub struct App {
     pub dupes: Option<super::dupes::DupesUi>,
 }
 
-const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+/// The interface fonts (regular, semibold), read once from the system.
+fn ui_fonts() -> &'static Option<(Arc<FontData>, Arc<FontData>)> {
+    static FONTS: std::sync::OnceLock<Option<(Arc<FontData>, Arc<FontData>)>> = std::sync::OnceLock::new();
+    FONTS.get_or_init(|| {
+        let load = |bold| {
+            let (bytes, index, weight) = crate::i18n::ui_font(bold)?;
+            let mut fd = FontData::from_owned(bytes);
+            fd.index = index;
+            if let Some(w) = weight {
+                fd.tweak.coords = egui::epaint::text::VariationCoords::new([(b"wght", w)]);
+            }
+            Some(Arc::new(fd))
+        };
+        Some((load(false)?, load(true)?))
+    })
+}
 
 /// Where a font's baseline sits below the middle of its line box, in ems.
 /// Read the way egui reads it, so the two agree.
@@ -372,14 +384,15 @@ fn baseline_drop(bytes: &[u8], index: u32) -> Option<f32> {
     Some((m.ascent + m.descent - m.leading) / 2.0 / m.units_per_em as f32)
 }
 
-/// How far down to draw a system font's glyphs, as a fraction of the font
-/// size, so they share Inter's baseline. egui lines a fallback font up by the
-/// middle of its line box, and system fonts split theirs differently from
-/// Inter (a tall line gap, a deep descent), which left their text a few
-/// pixels too high or too low next to Latin.
+/// How far down to draw a script font's glyphs, as a fraction of the font
+/// size, so they share the interface font's baseline. egui lines a fallback
+/// font up by the middle of its line box, and fonts split theirs differently
+/// (a tall line gap, a deep descent), which left their text a few pixels too
+/// high or too low next to Latin.
 fn baseline_shift(bytes: &[u8], index: u32) -> f32 {
-    match (baseline_drop(INTER, 0), baseline_drop(bytes, index)) {
-        (Some(inter), Some(font)) => inter - font,
+    let Some((ui, _)) = ui_fonts() else { return 0.0 };
+    match (baseline_drop(&ui.font, ui.index), baseline_drop(bytes, index)) {
+        (Some(base), Some(font)) => base - font,
         _ => 0.0,
     }
 }
@@ -405,7 +418,7 @@ fn system_font_data(code: &str) -> Option<Arc<FontData>> {
     Some(fd)
 }
 
-/// Installs the bundled fonts plus, for non-Latin languages, a system font
+/// Installs the system interface font plus, for non-Latin languages, a font
 /// that covers the script (loaded at runtime to keep the app small). The
 /// scripts used by file names get a font too, whatever the UI language.
 pub fn install_fonts(ctx: &egui::Context, lang: &str, all_scripts: bool) {
@@ -431,25 +444,22 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str, all_scripts: bool) {
             script_names.push(name);
         }
     }
-    fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(INTER)));
-    fonts.font_data.insert("inter-bold".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"))));
-    fonts.font_data.insert("fredoka".into(), Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/Fredoka-SemiBold.ttf"))));
     let mut fallback: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    // after egui's defaults: they cover Cyrillic/Greek with proper metrics,
-    // the system fonts then fill in CJK, Arabic, Indic scripts and Thai
+    // after egui's defaults (the last resort for Latin when no system font
+    // was found), the script fonts fill in CJK, Arabic, Indic scripts and Thai
     fallback.extend(script_names);
-    let mut prop = vec!["inter".to_string()];
-    prop.extend(fallback.iter().cloned());
-    fonts.families.insert(FontFamily::Proportional, prop);
-    let mut b = vec!["inter-bold".to_string()];
-    b.extend(fallback.iter().cloned());
-    fonts.families.insert(FontFamily::Name("bold".into()), b);
-    let mut d = vec!["inter-bold".to_string()];
-    d.extend(fallback.iter().cloned());
-    fonts.families.insert(FontFamily::Name("display".into()), d);
-    let mut br = vec!["fredoka".to_string(), "inter-bold".to_string()];
-    br.extend(fallback.iter().cloned());
-    fonts.families.insert(FontFamily::Name("brand".into()), br);
+    let (mut regular, mut bold) = (Vec::new(), Vec::new());
+    if let Some((r, b)) = ui_fonts() {
+        fonts.font_data.insert("ui".into(), r.clone());
+        fonts.font_data.insert("ui-bold".into(), b.clone());
+        regular.push("ui".to_string());
+        bold.push("ui-bold".to_string());
+    }
+    regular.extend(fallback.iter().cloned());
+    bold.extend(fallback.iter().cloned());
+    fonts.families.insert(FontFamily::Proportional, regular);
+    fonts.families.insert(FontFamily::Name("bold".into()), bold.clone());
+    fonts.families.insert(FontFamily::Name("display".into()), bold);
     ctx.set_fonts(fonts);
 }
 
@@ -462,7 +472,7 @@ impl App {
         let lang = crate::i18n::resolve(&std::env::var("SQUIRRELDISK_LANG").unwrap_or_else(|_| settings.language.clone()));
         crate::i18n::set_language(lang);
         install_fonts(&cc.egui_ctx, lang, false);
-        let theme = theme::by_name(&settings.theme);
+        let theme = theme::resolve(&settings.theme, cc.egui_ctx.system_theme() == Some(egui::Theme::Dark));
         let (gl, gl_error) = match cc.gl.as_ref().map(|gl| SunburstGl::new(gl)) {
             Some(Ok(r)) => (Some(Arc::new(Mutex::new(r))), None),
             Some(Err(e)) => (None, Some(e)),
@@ -499,7 +509,6 @@ impl App {
             let _ = crate::ipc::serve(socket, move |request| crate::cli::answer(&s, request));
         }
         App {
-            themes: theme::all(),
             theme,
             sounds: Some(Sounds::new()),
             gl,
@@ -512,7 +521,6 @@ impl App {
             modal_opened: Instant::now(),
             toasts: Toasts::default(),
             drag: None,
-            particles: Particles::default(),
             time: 0.0,
             dt: 0.016,
             last_frame: Instant::now(),
@@ -535,7 +543,6 @@ impl App {
             update_checked: Instant::now(),
             update_prompted: None,
             update_restart: false,
-            sponsors: crate::sponsor::Sponsors::start(settings.sponsor_measurement),
             logo: None,
             dock: DockState::default(),
             director: super::director::Director::from_env(),
@@ -557,25 +564,6 @@ impl App {
     fn publish_scans(&self) {
         let done = self.sessions.iter().filter(|s| s.was_done && s.progress.error.lock().unwrap().is_none() && s.source().is_local());
         self.scans.lock().unwrap().set(done.map(|s| (s.tree.clone(), s.watch.is_some())));
-    }
-
-    /// Feeds the local sponsor matcher with the startup disk fill level.
-    pub fn update_sponsor_disk(&self) {
-        let boot = self.volumes.iter().find(|v| v.is_boot).map(|v| v.used_frac());
-        let external = self.volumes.iter().any(|v| v.removable);
-        self.sponsors.set_disk(boot, external);
-    }
-
-    /// Draws the sponsor banner and handles views/clicks.
-    pub fn sponsor_banner(&mut self, ui: &mut egui::Ui, rect: Rect, placement: &'static str) {
-        let personalized = self.settings.personalized_sponsors;
-        let measure = self.settings.sponsor_measurement;
-        let choice = self.sponsors.choose(personalized);
-        self.sponsors.record_view(&choice.ad, placement, measure);
-        let theme = self.theme.clone();
-        if let super::ads::BannerAction::Open = super::ads::banner(ui, rect, egui::Id::new(("sponsor", placement)), &choice, personalized, &theme) {
-            os_open(&self.sponsors.click_url(&choice.ad, placement, measure), false);
-        }
     }
 
     /// Mirrors scan progress in the Dock icon: the ring fills up and the acorn
@@ -812,7 +800,6 @@ impl App {
         let mut sounds: Vec<Sfx> = Vec::new();
         let mut toasts: Vec<(String, Color32)> = Vec::new();
         let mut auth_needed: Option<(String, String)> = None;
-        let mut interest_jobs: Vec<SharedTree> = Vec::new();
         let watch_enabled = self.settings.watch_fs;
         for s in self.sessions.iter_mut() {
             // scan finished?
@@ -828,9 +815,6 @@ impl App {
                 } else {
                     // A finished scan speaks for itself: no toast, just the (optional) sound.
                     sounds.push(Sfx::Success);
-                    if s.source().is_local() {
-                        interest_jobs.push(s.tree.clone());
-                    }
                     if watch_enabled && s.source().is_local() {
                         let root = s.tree.read().unwrap().root_path.clone();
                         s.watch = FsWatch::new(std::path::Path::new(&root));
@@ -883,12 +867,6 @@ impl App {
         }
         for (t, c) in toasts {
             self.toasts.push(t, c);
-        }
-        if self.settings.personalized_sponsors {
-            for tree in interest_jobs {
-                // On-device only: folder names + sizes already in memory.
-                self.sponsors.learn_from_scan(tree);
-            }
         }
         if let Some((host, path)) = auth_needed {
             let retry = self.ssh_tried.contains(&host);
@@ -972,10 +950,11 @@ impl eframe::App for App {
         self.dt = now.duration_since(self.last_frame).as_secs_f32().clamp(0.001, 0.1);
         self.last_frame = now;
         self.time += self.dt as f64;
-        self.apply_theme(&ctx);
-        if self.time < 0.1 {
-            self.update_sponsor_disk();
+        let want = theme::resolve(&self.settings.theme, ctx.system_theme() == Some(egui::Theme::Dark));
+        if want.name != self.theme.name {
+            self.theme = want;
         }
+        self.apply_theme(&ctx);
         self.direct(&ctx);
         self.marks.clear();
         self.debug_hooks(&ctx);
@@ -988,7 +967,6 @@ impl eframe::App for App {
         if self.volumes_at.elapsed() > Duration::from_secs(5) && self.screen == Screen::Home {
             self.volumes = disks::list();
             self.volumes_at = Instant::now();
-            self.update_sponsor_disk();
         }
 
         // dropped folders → scan
@@ -1016,7 +994,6 @@ impl eframe::App for App {
         self.modal_ui(&ctx);
         self.drag_overlay(&ctx);
         let theme = self.theme.clone();
-        self.particles.step_and_draw(&ctx, self.dt, &theme);
         self.toasts.draw(&ctx, &theme, self.dt);
 
         // keyboard shortcuts
@@ -1055,7 +1032,6 @@ impl eframe::App for App {
         // repaint policy: animate when something moves, poll slowly while scanning
         let scanning = self.sessions.iter().any(|s| s.is_scanning() || s.delete.is_some());
         let animating = self.drag.is_some()
-            || !self.particles.is_empty()
             || !self.toasts.is_empty()
             || match self.screen {
                 Screen::Session(i) => self.sessions.get(i).is_some_and(|s| if self.settings.chart_style == "treemap" { !s.treemap.settled } else { !s.anim.settled }),
@@ -1133,8 +1109,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_fonts_share_inters_baseline() {
-        assert_eq!(baseline_shift(INTER, 0), 0.0);
+    fn script_fonts_share_the_interface_baseline() {
+        if let Some((ui, _)) = ui_fonts() {
+            assert_eq!(baseline_shift(&ui.font, ui.index), 0.0);
+        }
         assert_eq!(baseline_shift(b"not a font", 0), 0.0);
         // every script's font on this machine: a shift is a fraction of an em
         for l in crate::i18n::LANGS.iter() {

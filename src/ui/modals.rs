@@ -9,7 +9,7 @@ use crate::safety::Verdict;
 use crate::sound::Sfx;
 use crate::tree::fmt_size;
 use crate::update::State as UpState;
-use eframe::egui::{self, Align2, Color32, Id, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align2, Color32, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use std::f32::consts::TAU;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -32,16 +32,13 @@ pub(super) fn modal_frame(ctx: &egui::Context, opened: Instant, size: Vec2, them
     let mut backdrop_clicked = false;
     egui::Area::new(Id::new("modal")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let resp = ui.allocate_rect(screen, Sense::click());
-        ui.painter().rect_filled(screen, cr(0.0), with_alpha(Color32::from_rgb(8, 5, 14), 0.55 * e));
+        ui.painter().rect_filled(screen, cr(0.0), with_alpha(Color32::BLACK, if theme.dark { 0.45 } else { 0.2 } * e));
         let size = Vec2::new(size.x.min(screen.width() - 32.0), size.y.min(screen.height() - 32.0));
         let card = Rect::from_center_size(screen.center() + Vec2::new(0.0, (1.0 - e) * 8.0), size);
         let p = ui.painter();
-        widgets::shadow(p, card, 14.0, 1.3 * e, theme);
-        p.rect_filled(card, cr(14.0), with_alpha(lerp_color(theme.surface, theme.bg_top, 0.3), e));
-        p.rect_stroke(card, cr(14.0), Stroke::new(1.0, with_alpha(theme.stroke, e)), egui::StrokeKind::Inside);
-        // gentle accent glow at the top
-        let p2 = p.with_clip_rect(card);
-        let _ = &p2;
+        widgets::shadow(p, card, 12.0, 2.0 * e, theme);
+        p.rect_filled(card, cr(12.0), with_alpha(theme.surface, e));
+        p.rect_stroke(card, cr(12.0), Stroke::new(1.0, with_alpha(theme.stroke, 0.7 * e)), egui::StrokeKind::Inside);
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 backdrop_clicked = !card.contains(pos);
@@ -111,7 +108,7 @@ impl App {
             let x0 = card.left() + 28.0;
             let w = card.width() - 56.0;
             let mut y = card.top() + 96.0;
-            ui.painter().text(Pos2::new(x0, y), Align2::LEFT_TOP, tr("PASSPHRASE OR PASSWORD"), bold(11.0), theme.text_faint);
+            widgets::label(&ui.painter(), Pos2::new(x0, y), tr("PASSPHRASE OR PASSWORD"), &theme);
             y += 18.0;
             let r = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(w, 38.0));
             let id = Id::new("ssh-secret");
@@ -281,7 +278,6 @@ impl App {
 
     fn settings_modal(&mut self, ctx: &egui::Context) -> Option<Modal> {
         let theme = self.theme.clone();
-        let themes = self.themes.clone();
         let mut close = false;
         let mut new_theme: Option<String> = None;
         let mut s = self.settings.clone();
@@ -294,12 +290,12 @@ impl App {
         let mut scroll = self.settings_scroll;
         let mut content_h = self.settings_content_h;
         let bd = modal_frame(ctx, self.modal_opened, Vec2::new(620.0, 760.0), &theme, |ui, card| {
-            title(ui, card, tr("Settings"), Some(tr("Appearance, sounds and behaviour.")), &theme);
+            title(ui, card, tr("Settings"), None, &theme);
             close = close_button(ui, card, &theme);
             let x0 = card.left() + 28.0;
             let w = card.width() - 56.0;
             // Scrollable middle: title and footer stay put.
-            let body = Rect::from_min_max(Pos2::new(card.left(), card.top() + 88.0), Pos2::new(card.right(), card.bottom() - 66.0));
+            let body = Rect::from_min_max(Pos2::new(card.left(), card.top() + 66.0), Pos2::new(card.right(), card.bottom() - 66.0));
             let max_scroll = (content_h - body.height()).max(0.0);
             if ui.rect_contains_pointer(body) {
                 scroll -= ui.input(|i| i.smooth_scroll_delta.y);
@@ -310,20 +306,20 @@ impl App {
                 ui.set_clip_rect(body.intersect(ui.clip_rect()));
                 let top = body.top() + 8.0 - scroll;
                 let mut y = top;
-                ui.painter().text(Pos2::new(x0, y), Align2::LEFT_TOP, tr("THEME"), bold(11.0), theme.text_faint);
-                y += 20.0;
-                let cols = 4;
-                let gap = 10.0;
-                let tw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
-                let th = 76.0;
-                for (k, t) in themes.iter().enumerate() {
-                    let r = Rect::from_min_size(Pos2::new(x0 + (k % cols) as f32 * (tw + gap), y + (k / cols) as f32 * (th + gap)), Vec2::new(tw, th));
-                    mark(format!("theme:{}", t.name), r);
-                    if theme_swatch(ui, r, t, t.name == theme.name, self.time).clicked() {
-                        new_theme = Some(t.name.to_string());
+                widgets::label(&ui.painter(), Pos2::new(x0, y), tr("THEME"), &theme);
+                y += 26.0;
+                let gap = 14.0;
+                let tw = (w - gap * 2.0) / 3.0;
+                let th = 86.0;
+                let chosen = if matches!(s.theme.as_str(), "Light" | "Dark") { s.theme.as_str() } else { super::theme::AUTOMATIC };
+                for (k, name) in super::theme::CHOICES.iter().enumerate() {
+                    let r = Rect::from_min_size(Pos2::new(x0 + k as f32 * (tw + gap), y), Vec2::new(tw, th));
+                    mark(format!("theme:{name}"), r);
+                    if theme_swatch(ui, r, name, *name == chosen, &theme).clicked() {
+                        new_theme = Some(name.to_string());
                     }
                 }
-                y += ((themes.len() + cols - 1) / cols) as f32 * (th + gap) + 12.0;
+                y += th + 18.0;
 
                 // language
                 let lang_row = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(w, 44.0));
@@ -339,9 +335,11 @@ impl App {
                 };
                 let lb = Rect::from_min_size(Pos2::new(x0 + w - 220.0, lang_row.top() + 6.0), Vec2::new(220.0, 32.0));
                 lang_btn = lb;
-            if widgets::button(ui, lb, Id::new("lang-btn"), &current, Some(Icon::Forward), BtnStyle::Subtle, &theme).clicked() {
+                if widgets::button(ui, lb, Id::new("lang-btn"), &current, None, BtnStyle::Subtle, &theme).clicked() {
                     picker = !picker;
                 }
+                let chevron = Rect::from_center_size(Pos2::new(lb.right() - 16.0, lb.center().y), Vec2::splat(10.0));
+                widgets::draw_icon(ui.painter(), Icon::Expand, chevron, theme.text_dim);
                 y += 50.0;
 
                 // chart style: sunburst or treemap
@@ -359,15 +357,17 @@ impl App {
                 }
                 y += 50.0;
 
-                let rows: [(&str, &str, u8); 7] = [
+                let rows: Vec<(&str, &str, u8)> = [
                     (tr("Sound effects"), tr("Plops, crunches and a little fanfare"), 0),
                     (tr("Shader effects"), tr("GPU-rendered, anti-aliased segments (turn off on very old GPUs)"), 1),
                     (tr("Watch for changes"), tr("Update the chart when files change on disk"), 2),
                     (tr("Check for updates"), tr("Look for new releases on GitHub at launch"), 3),
-                (tr("Install updates automatically"), tr("Download new versions in the background and apply them on restart"), 6),
-                    (tr("Personalized sponsors"), tr("Picked on this computer from disk categories; nothing about you is sent"), 4),
-                    (tr("Anonymous sponsor stats"), tr("Daily view totals and click counts, with no ID of any kind"), 5),
-                ];
+                    (tr("Install updates automatically"), tr("Download new versions in the background and apply them on restart"), 6),
+                ]
+                .into_iter()
+                // no update rows until this fork has a release feed
+                .filter(|r| !matches!(r.2, 3 | 6) || !crate::UPDATE_REPO.is_empty())
+                .collect();
                 for (label, sub, k) in rows {
                     let r = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(w, 44.0));
                     let p = ui.painter();
@@ -379,22 +379,11 @@ impl App {
                         1 => &mut s.shader_fx,
                         2 => &mut s.watch_fs,
                         3 => &mut s.auto_update,
-                        4 => &mut s.personalized_sponsors,
-                    6 => &mut s.auto_install,
-                        _ => &mut s.sponsor_measurement,
+                        _ => &mut s.auto_install,
                     };
                     widgets::toggle(ui, tgl, Id::new(("set-toggle", k)), v, &theme);
                     y += 46.0;
                 }
-                // Transparency: exactly what the sponsor feature knows, all local.
-                let sig = self.sponsors.signals();
-                let mut known: Vec<&str> = sig.interests.iter().map(|i| i.label()).collect();
-                known.sort();
-                let interests = if !s.personalized_sponsors { tr("off").to_string() } else if known.is_empty() { tr("none yet").to_string() } else { known.join(", ") };
-                let local = trf("Known only on this device: {interests}  ·  views waiting to be reported: {views}", &[("interests", &interests), ("views", &self.sponsors.pending_views())]);
-                let local = widgets::truncate(ui.painter(), &local, &font(11.0), w);
-                ui.painter().text(Pos2::new(x0, y + 4.0), Align2::LEFT_CENTER, local, font(11.0), theme.text_faint);
-                y += 22.0;
                 let p = ui.painter();
                 p.text(Pos2::new(x0, y + 12.0), Align2::LEFT_CENTER, tr("Chart depth"), bold(13.5), theme.text);
                 p.text(Pos2::new(x0, y + 30.0), Align2::LEFT_CENTER, trf("{rings} rings — fewer is faster on old machines", &[("rings", &s.rings)]), font(11.5), theme.text_dim);
@@ -493,12 +482,15 @@ impl App {
             if let Some(e) = &gl_error {
                 line = format!("{line}  ·  {}", trf("CPU renderer ({reason})", &[("reason", e)]));
             }
+            let updates = !crate::UPDATE_REPO.is_empty();
             // the button grows with its (translated) label
-            let bw = (p.layout_no_wrap(tr("Check for updates").to_string(), bold(13.0), theme.text).size().x + 52.0).clamp(160.0, w * 0.55);
-            let line = widgets::truncate(p, &line, &font(12.0), w - bw - 12.0);
+            let bw = if updates { (p.layout_no_wrap(tr("Check for updates").to_string(), font(13.0), theme.text).size().x + 52.0).clamp(160.0, w * 0.55) } else { 0.0 };
+            let line = widgets::truncate(p, line.trim_end_matches([' ', '·']), &font(12.0), w - bw - 12.0);
             p.text(Pos2::new(x0, y + 26.0), Align2::LEFT_CENTER, line, font(12.0), theme.text_dim);
-            let b = Rect::from_min_size(Pos2::new(x0 + w - bw, y + 10.0), Vec2::new(bw, 32.0));
-            check_now = widgets::button(ui, b, Id::new("check-upd"), tr("Check for updates"), Some(Icon::Refresh), BtnStyle::Subtle, &theme).clicked();
+            if updates {
+                let b = Rect::from_min_size(Pos2::new(x0 + w - bw, y + 10.0), Vec2::new(bw, 32.0));
+                check_now = widgets::button(ui, b, Id::new("check-upd"), tr("Check for updates"), Some(Icon::Refresh), BtnStyle::Subtle, &theme).clicked();
+            }
             if picker {
                 // grid of languages drawn over the settings card
                 let cols = 3;
@@ -535,9 +527,6 @@ impl App {
                     let fill = if selected { with_alpha(theme.accent, 0.35) } else { with_alpha(theme.surface, h) };
                     p.rect_filled(cell, widgets::cr(6.0), fill);
                     p.text(Pos2::new(cell.left() + 10.0, cell.center().y), Align2::LEFT_CENTER, name, font(13.0), theme.text);
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
                     if resp.clicked() {
                         new_lang = Some(code.to_string());
                         picker = false;
@@ -570,7 +559,7 @@ impl App {
         }
         if let Some(n) = new_theme {
             s.theme = n.clone();
-            self.theme = super::theme::by_name(&n);
+            self.theme = super::theme::resolve(&n, ctx.system_theme() == Some(egui::Theme::Dark));
             self.sfx(Sfx::Blip);
         }
         if s.folder_menu != self.settings.folder_menu {
@@ -584,9 +573,6 @@ impl App {
             if let Err(e) = done {
                 self.toasts.push(trf("Couldn't install the command: {error}", &[("error", &e)]), self.theme.danger);
             }
-        }
-        if !s.personalized_sponsors && self.settings.personalized_sponsors {
-            self.sponsors.forget_interests();
         }
         let changed = serde_json::to_string(&s).ok() != serde_json::to_string(&self.settings).ok();
         self.settings = s;
@@ -613,7 +599,7 @@ impl App {
             let w = card.width() - 56.0;
             let mut y = card.top() + 96.0;
             let p = ui.painter();
-            p.text(Pos2::new(x0, y), Align2::LEFT_TOP, tr("HOST"), bold(11.0), theme.text_faint);
+            widgets::label(&p, Pos2::new(x0, y), tr("HOST"), &theme);
             y += 18.0;
             let r = widgets::text_input(ui, Rect::from_min_size(Pos2::new(x0, y), Vec2::new(w, 38.0)), Id::new("ssh-host"), &mut host, "user@server.example.com", &theme);
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -641,7 +627,7 @@ impl App {
             if !hosts.is_empty() {
                 y += 36.0;
             }
-            ui.painter().text(Pos2::new(x0, y), Align2::LEFT_TOP, tr("PATH"), bold(11.0), theme.text_faint);
+            widgets::label(&ui.painter(), Pos2::new(x0, y), tr("PATH"), &theme);
             y += 18.0;
             widgets::text_input(ui, Rect::from_min_size(Pos2::new(x0, y), Vec2::new(w, 38.0)), Id::new("ssh-path"), &mut path, "/", &theme);
             y += 50.0;
@@ -828,8 +814,6 @@ impl App {
             let freed = job.freed.load(Ordering::Relaxed);
             if freed > 0 {
                 self.sfx(Sfx::Success);
-                let colors: Vec<Color32> = theme.wheel.iter().map(|c| Color32::from_rgb(c[0], c[1], c[2])).collect();
-                self.particles.confetti(ctx.content_rect(), &colors);
             } else if errs > 0 {
                 self.sfx(Sfx::Error);
             }
@@ -852,7 +836,6 @@ impl App {
             let c = Pos2::new(card.center().x, card.top() + 120.0);
             let disp = ui.ctx().animate_value_with_time(Id::new("del-frac"), if finished { 1.0 } else { frac }, 0.25);
             // glowing ring
-            widgets::glow(p, c, 110.0, with_alpha(if finished { theme.ok } else { theme.danger }, 0.18));
             p.circle_stroke(c, 70.0, Stroke::new(10.0, with_alpha(theme.bg_bottom, 0.8)));
             let n = 120;
             let seg = ((disp * n as f32) as usize).max(1);
@@ -919,49 +902,42 @@ impl App {
 }
 
 /// Mini preview of a theme: its background with a tiny sunburst.
-fn theme_swatch(ui: &mut Ui, r: Rect, t: &Theme, selected: bool, time: f64) -> egui::Response {
-    let id = Id::new(("swatch", t.name));
-    let resp = ui.interact(r, id, Sense::click());
-    let h = ui.ctx().animate_bool_with_time(id.with("h"), resp.hovered(), 0.12);
-    let s = ui.ctx().animate_bool_with_time(id.with("s"), selected, 0.15);
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
+/// A small window preview for an appearance choice, like System Settings.
+fn theme_swatch(ui: &mut Ui, r: Rect, choice: &str, selected: bool, ui_theme: &Theme) -> egui::Response {
+    let resp = ui.interact(r, Id::new(("swatch", choice)), Sense::click());
     let p = ui.painter();
-    let rr = r.translate(Vec2::new(0.0, -2.0 * h));
-    p.rect_filled(rr, cr(12.0), lerp_color(t.bg_top, t.bg_bottom, 0.5));
-    let c = Pos2::new(rr.left() + 32.0, rr.top() + 30.0);
-    let spin = if h > 0.0 { (time as f32 * 0.8) * h } else { 0.0 };
-    let n = 10;
-    for ring in 0..2 {
-        let (r0, r1) = (7.0 + ring as f32 * 7.0, 13.0 + ring as f32 * 7.0);
-        for i in 0..n {
-            let a0 = spin + TAU * i as f32 / n as f32 + 0.03;
-            let a1 = spin + TAU * (i + 1) as f32 / n as f32 - 0.03;
-            let col = t.segment_color(i as f32 / n as f32, ring + 1, false);
-            let mut pts = Vec::new();
-            for k in 0..=6 {
-                let a = a0 + (a1 - a0) * k as f32 / 6.0;
-                pts.push(c + Vec2::angled(a) * r1);
-            }
-            for k in (0..=6).rev() {
-                let a = a0 + (a1 - a0) * k as f32 / 6.0;
-                pts.push(c + Vec2::angled(a) * r0);
-            }
-            // non-convex: draw as two triangles fan per step
-            for k in 0..6 {
-                let q = vec![pts[k], pts[k + 1], pts[13 - k - 1], pts[13 - k]];
-                p.add(Shape::convex_polygon(q, col, Stroke::NONE));
-            }
+    let preview = Rect::from_min_max(r.min, Pos2::new(r.right(), r.bottom() - 24.0));
+    let draw = |p: &egui::Painter, t: &Theme| {
+        p.rect_filled(preview, cr(8.0), t.bg_top);
+        let win = Rect::from_min_max(preview.min + Vec2::new(14.0, 12.0), preview.max - Vec2::new(14.0, 0.0));
+        let corners = egui::CornerRadius { nw: 5, ne: 5, sw: 0, se: 0 };
+        p.rect_filled(win, corners, t.surface);
+        p.rect_stroke(win, corners, Stroke::new(1.0, t.stroke), egui::StrokeKind::Inside);
+        for k in 0..3 {
+            p.circle_filled(Pos2::new(win.left() + 8.0 + k as f32 * 6.5, win.top() + 7.0), 2.0, t.text_faint);
+        }
+        p.rect_filled(Rect::from_min_size(win.min + Vec2::new(8.0, 17.0), Vec2::new(win.width() * 0.4, 4.0)), cr(2.0), t.accent);
+        p.rect_filled(Rect::from_min_size(win.min + Vec2::new(8.0, 26.0), Vec2::new(win.width() * 0.7, 3.0)), cr(1.5), with_alpha(t.text_dim, 0.45));
+    };
+    let (light, dark) = (super::theme::by_name("Light"), super::theme::by_name("Dark"));
+    match choice {
+        "Light" => draw(p, &light),
+        "Dark" => draw(p, &dark),
+        _ => {
+            let mid = preview.center().x;
+            let left = Rect::from_min_max(preview.min, Pos2::new(mid, preview.bottom()));
+            let right = Rect::from_min_max(Pos2::new(mid, preview.top()), preview.max);
+            draw(&p.with_clip_rect(left.intersect(p.clip_rect())), &light);
+            draw(&p.with_clip_rect(right.intersect(p.clip_rect())), &dark);
         }
     }
-    p.circle_filled(c, 6.5, t.surface);
-    // fake UI lines
-    for k in 0..3 {
-        let y = rr.top() + 18.0 + k as f32 * 10.0;
-        p.rect_filled(Rect::from_min_size(Pos2::new(rr.left() + 62.0, y), Vec2::new(rr.width() - 76.0 - k as f32 * 8.0, 4.0)), cr(2.0), with_alpha(t.text_dim, 0.5));
-    }
-    p.text(Pos2::new(rr.left() + 10.0, rr.bottom() - 13.0), Align2::LEFT_CENTER, t.name, bold(11.5), t.text);
-    p.rect_stroke(rr, cr(12.0), Stroke::new(1.0 + 1.5 * s, lerp_color(with_alpha(t.stroke, 0.8), t.accent, s.max(h * 0.5))), egui::StrokeKind::Inside);
+    let (ring_w, ring_c) = if selected { (2.5, ui_theme.accent) } else { (1.0, ui_theme.stroke) };
+    p.rect_stroke(preview, cr(8.0), Stroke::new(ring_w, ring_c), egui::StrokeKind::Outside);
+    let label = match choice {
+        "Light" => tr("Light"),
+        "Dark" => tr("Dark"),
+        _ => tr("Automatic"),
+    };
+    p.text(Pos2::new(r.center().x, r.bottom() - 9.0), Align2::CENTER_CENTER, label, font(12.0), if selected { ui_theme.text } else { ui_theme.text_dim });
     resp
 }

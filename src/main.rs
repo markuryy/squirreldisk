@@ -24,8 +24,6 @@ mod icon;
 #[cfg(feature = "gui")]
 mod sound;
 #[cfg(feature = "gui")]
-mod sponsor;
-#[cfg(feature = "gui")]
 mod ui;
 #[cfg(feature = "gui")]
 mod update;
@@ -34,6 +32,11 @@ mod watch;
 
 /// GitHub repository used for releases, self-update and agent downloads.
 pub const GITHUB_REPO: &str = "adileo/squirreldisk";
+
+/// Repository the in-app updater installs releases from. Empty until this
+/// fork publishes its own releases: pointing it at upstream would replace
+/// this build with upstream's.
+pub const UPDATE_REPO: &str = "";
 
 fn main() {
     // Invoked by ssh as SSH_ASKPASS helper: answer the prompt and leave.
@@ -169,8 +172,14 @@ fn run_gui(folder: Option<std::path::PathBuf>) {
     if cfg!(target_os = "macos") {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
     }
+    // SQD_OFFSCREEN=1 (development: automated screenshots without the
+    // window popping up on the desktop; use with SQD_WINDOW)
+    let offscreen = std::env::var_os("SQD_OFFSCREEN").is_some();
+    if offscreen {
+        viewport = viewport.with_position([-20000.0, -20000.0]);
+    }
     // centred at the default size; the app then sizes it to the screen
-    let options = eframe::NativeOptions { viewport, multisampling: 0, centered: true, ..Default::default() };
+    let options = eframe::NativeOptions { viewport, multisampling: 0, centered: !offscreen, ..Default::default() };
     if let Err(e) = eframe::run_native("SquirrelDisk", options, Box::new(|cc| {
         let mut app = ui::app::App::new(cc);
         app.open_at_start = folder;

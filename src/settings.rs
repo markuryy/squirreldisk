@@ -64,10 +64,6 @@ pub struct Settings {
     pub backup_folder: Option<String>,
     pub backup_remote: Option<String>,
     pub skipped_version: Option<String>,
-    /// Choose sponsors from on-device signals (nothing is sent).
-    pub personalized_sponsors: bool,
-    /// Send anonymous daily view totals / count clicks.
-    pub sponsor_measurement: bool,
     /// "Scan with SquirrelDisk" in the file manager's menu for folders.
     pub folder_menu: bool,
     /// The `squirreldisk` command was set up (or tried) at first launch.
@@ -77,13 +73,13 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            theme: "Hazelnut".into(),
+            theme: "Automatic".into(),
             language: "auto".into(),
             sound: false,
             volume: 0.6,
             shader_fx: true,
-            auto_update: true,
-            auto_install: true,
+            auto_update: false,
+            auto_install: false,
             rings: 6,
             chart_style: "sunburst".into(),
             watch_fs: true,
@@ -91,8 +87,6 @@ impl Default for Settings {
             backup_folder: None,
             backup_remote: None,
             skipped_version: None,
-            personalized_sponsors: true,
-            sponsor_measurement: true,
             folder_menu: false,
             cli_offered: false,
         }

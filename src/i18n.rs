@@ -251,10 +251,31 @@ pub fn tr_reason(reason: &str) -> String {
 
 /// A system font that covers the script of `code`, as (bytes, index in collection).
 /// Loaded at runtime so the app doesn't have to ship tens of MB of fonts.
+/// The platform's interface font, as (file contents, face index, weight
+/// for variable fonts): SF Pro on macOS, Segoe UI on Windows, fontconfig's
+/// sans-serif elsewhere. `bold` asks for the semibold used in headings.
+pub fn ui_font(bold: bool) -> Option<(Vec<u8>, u32, Option<f32>)> {
+    if cfg!(target_os = "macos") {
+        let bytes = std::fs::read("/System/Library/Fonts/SFNS.ttf").ok()?;
+        return Some((bytes, 0, Some(if bold { 590.0 } else { 400.0 })));
+    }
+    if cfg!(windows) {
+        let file = if bold { "C:\\Windows\\Fonts\\seguisb.ttf" } else { "C:\\Windows\\Fonts\\segoeui.ttf" };
+        return std::fs::read(file).ok().map(|b| (b, 0, None));
+    }
+    let pattern = if bold { "sans-serif:semibold" } else { "sans-serif" };
+    let out = std::process::Command::new("fc-match").args(["-f", "%{file}\n%{index}", pattern]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let file = lines.next()?.trim().to_string();
+    let index = lines.next().and_then(|i| i.trim().parse().ok()).unwrap_or(0);
+    std::fs::read(&file).ok().map(|b| (b, index, None))
+}
+
 pub fn system_font(code: &str) -> Option<(Vec<u8>, u32)> {
     let script = lang(code).script;
     if matches!(script, Script::Latin | Script::Cyrillic) {
-        return None; // covered by the bundled fonts
+        return None; // covered by the interface font
     }
     let candidates: &[&str] = match (cfg!(target_os = "macos"), cfg!(windows), script) {
         (true, _, Script::Cjk) => &["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"],
@@ -305,10 +326,7 @@ mod tests {
                 include_str!("ui/modals.rs"),
                 include_str!("ui/cloud.rs"),
                 include_str!("ui/fx.rs"),
-                include_str!("ui/ads.rs"),
                 include_str!("ui/app.rs"),
-                include_str!("sponsor/mod.rs"),
-                include_str!("sponsor/interests.rs"),
                 include_str!("i18n.rs"),
             ]
             .join("\n");

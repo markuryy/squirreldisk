@@ -1,8 +1,7 @@
 name: release
 
+# Started by hand only: tagged releases are built, signed and notarized locally.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
